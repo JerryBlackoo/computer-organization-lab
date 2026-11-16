@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../word_register.hpp"
+
 namespace colab::soc::core::registers {
-class MDR {};
+using MDR = WordRegister;
 }
