@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../common/dma_bus.hpp"
+
 namespace colab::devices::nvme {
-class DMA {};
+using DMA = common::DmaEngine;
 }
