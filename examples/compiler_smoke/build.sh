@@ -30,7 +30,7 @@ if [[ -z "$smoke_linker" ]]; then
     exit 1
 fi
 mkdir -p -- "$smoke_output_dir"
-smoke_flags=(--target=riscv32 -march=rv32i_zicsr_zifencei -mabi=ilp32 -mno-relax -msmall-data-limit=0
+smoke_flags=(--target=riscv32 -march=rv32im_zicsr_zifencei -mabi=ilp32 -mno-relax -msmall-data-limit=0
     -ffreestanding -fno-builtin -fno-pic -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -O1)
 "$smoke_clang" "${smoke_flags[@]}" -c "$smoke_source_dir/$smoke_start" -o "$smoke_output_dir/start.o"
 "$smoke_clang" "${smoke_flags[@]}" -c "$smoke_source_dir/$smoke_main" -o "$smoke_output_dir/main.o"

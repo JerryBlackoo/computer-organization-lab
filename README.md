@@ -10,7 +10,7 @@ The [Clang-generated C program tests](examples/compiler_smoke/README.md) cover E
 
 A user-mode C/PMP experiment enters U-mode via MRET and returns through a user ECALL. It also checks that user code cannot read machine-mode CSRs, access UART, overwrite kernel data, or execute kernel code. Addresses and test commands are in the same document.
 
-The CPU functional model covers all 40 base RV32I instructions, the six Zicsr instructions, and FENCE.I. Shared-RAM tests verify execution of newly modified cached instructions and device DMA initiated after FENCE.
+The CPU model covers all 40 base RV32I instructions, the eight RV32M integer multiply/divide instructions, the six Zicsr instructions, and FENCE.I. The [timing contract](docs/TIMING_CONTRACT.md), [RV32M guide](docs/rv32-muldiv.md), optional [single-issue DRAM timing](docs/DRAM_TIMING.md), and [interleaved DRAM model](docs/INTERLEAVED_DRAM.md) describe the clocked behavior and its limits. A separate [RV32IM RTL experiment](rtl/README.md) is checked against the C++ core; its privileged and pipeline features are not yet complete. Shared-RAM tests verify execution of newly modified cached instructions and device DMA initiated after FENCE.
 
 The platform also includes a single-core CLINT compatible with mtime, mtimecmp, and MSIP, plus WFI. DMA and time continue to advance while the CPU waits; timer and software interrupts can wake it and return via ISR/MRET. The compiled C program tests exercise this path as well.
 

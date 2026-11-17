@@ -51,6 +51,16 @@ __attribute__((noinline)) static word mix(word value, word item) {
     return (value ^ rotated) + ((item & 255u) ^ comparison);
 }
 
+__attribute__((noinline)) static word muldiv_smoke(void) {
+    volatile int signed_a = -7, signed_b = 3;
+    volatile word unsigned_a = 0xfffffffeu, unsigned_b = 3;
+    // Volatile operands force the compiler to generate actual RV32M instructions.
+    return signed_a / signed_b == -2 && signed_a % signed_b == -1 &&
+        unsigned_a / unsigned_b == 0x55555554u && unsigned_a % unsigned_b == 2 &&
+        unsigned_a * unsigned_b == 0xfffffffau &&
+        (word)(((unsigned long long)unsigned_a * unsigned_b) >> 32) == 2;
+}
+
 void c_entry(void) {
     word value = 0;
     for (word i = 0; i < 4; ++i) {
@@ -67,6 +77,7 @@ void c_entry(void) {
     if (*(volatile word*)0x70 != 11 || *(volatile word*)0x74 != (word)&compiler_smoke_ecall ||
         *(volatile word*)0x78 != 0) value = 0;
     if (!csr_smoke()) value = 0;
+    if (!muldiv_smoke()) value = 0;
     __asm__ volatile("fence iorw, iorw\nfence.i" ::: "memory");
     signature = value;
     *(volatile word*)0x60 = value;

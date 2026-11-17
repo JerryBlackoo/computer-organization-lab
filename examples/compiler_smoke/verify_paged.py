@@ -64,10 +64,17 @@ for i, (cause, value, label, delta) in enumerate(cases):
 statuses = [line for line in r.stdout.splitlines() if "cycles=160000 " in line]
 if len(statuses) != 2 or any("exceptions=10 " not in line or "mode=S waiting=wfi " not in line for line in statuses):
     fail("cold/warm boot did not finish in S-mode WFI with ten precise traps")
+paging_counts = []
 for line in statuses:
     stats = re.search(r"Sv32 walks=(\d+) PTE reads=(\d+) page faults=(\d+)", line)
     if not stats or int(stats[1]) < 10 or int(stats[2]) < 15 or int(stats[3]) != 9:
         fail("no evidence of real page-table transactions or nine page faults")
+    paging_counts.append(tuple(int(value) for value in stats.groups()))
+# This fixed firmware/default TLB now retains the identity supervisor superpage
+# across supervisor_done's address-only SFENCE: one fewer walk/root-PTE read than
+# the previous over-fence (20/36). Keep an exact counter oracle as well as VCD wiring checks.
+if any(counts != (19, 35, 9) for counts in paging_counts):
+    fail("default paged firmware must perform 19 walks, 35 PTE transactions and nine page faults")
 csrs = [dict((n, int(v, 16)) for n, v in re.findall(r"(\w+)=0x([0-9a-f]+)", line))
         for line in r.stdout.splitlines() if line.startswith("mstatus=")]
 if len(csrs) != 2 or csrs[0]["satp"] != 0x80000001 or csrs[0]["scause"] != 8 or csrs[0]["mcause"] != 0:
@@ -90,9 +97,13 @@ if a.trace:
             elif len(fields) == 2 and fields[0].startswith("b") and fields[1] in observations:
                 if set(fields[0][1:]) <= {"0", "1"}:
                     observations[fields[1]].add(int(fields[0][1:], 2))
-    for name, expected_value in (("satp", 0x80000001), ("page_walks", 20), ("page_table_reads", 36), ("page_faults", 9)):
-        if name not in codes or expected_value not in observations.get(codes[name], set()):
+    # Selective SFENCE and TLB organization affect walk counts. Verify that the
+    # waveform publishes both already-validated cold/warm execution snapshots.
+    expected = {"satp": {0x80000001}, "page_walks": {v[0] for v in paging_counts},
+                "page_table_reads": {v[1] for v in paging_counts}, "page_faults": {v[2] for v in paging_counts}}
+    for name, values in expected.items():
+        if name not in codes or not values <= observations.get(codes[name], set()):
             fail("VCD missing expected paging signal/value: " + name)
-    print("PASS VCD: satp activation, 20 walks, 36 PTE transactions and nine page faults")
+    print("PASS VCD: satp activation and paging counters match cold/warm execution snapshots")
 print("PASS compiled Sv32 M/S/U: signature=0x53563332, ten precise traps, guest A/D repair, RX/kernel isolation, SUM/MXR, SFENCE remap, cold+warm boot; ELF SHA256=" + hashlib.sha256(elf).hexdigest())
 print(statuses[0])
