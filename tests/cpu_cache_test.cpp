@@ -160,8 +160,8 @@ struct Harness {
     Interconnect bus;
     Port port;
     explicit Harness(soc::cache::Config cfg = Port::default_config(), interconnect::pcie::Config fabric = {},
-                     bool enabled = true, std::uint32_t base = 0)
-        : memory(dimm, base), bus(iommu, fabric), port(bus, cfg, enabled) {
+                     bool enabled = true, std::uint32_t base = 0, unsigned hit_cycles = 1)
+        : memory(dimm, base), bus(iommu, fabric), port(bus, cfg, enabled, hit_cycles) {
         bus.map_memory(base, dimm.geometry().capacity_bytes(), memory);
         memory.set_write_observer([this](auto address, const auto& data) { port.snoop_write(address, data); });
     }
@@ -176,6 +176,42 @@ struct Harness {
         assert(result.status == Status::Success); return result.data;
     }
 };
+
+static void configurable_hit_latency() {
+    for (unsigned latency : {1u, 2u}) {
+        Harness h(Port::default_config(), {}, true, 0, latency);
+        h.memory.write(0x100, c::word_bytes(7));
+        assert(c::load32(h.read(0x100)) == 7);
+        const auto completed = h.bus.fabric().statistics().completed;
+        const auto tag = h.port.submit(0, c::BusOperation::Read, 0x100, 4);
+        assert(h.port.ready(tag) == (latency == 1));
+        if (latency == 2) {
+            throws<std::length_error>([&] { h.port.submit(0, c::BusOperation::Read, 0x100, 4); });
+            // A write snooped before the data beat must be visible to that beat.
+            h.memory.write(0x100, c::word_bytes(99));
+            h.tick();
+        }
+        assert(h.port.ready(tag) && c::load32(h.port.take(tag).data) == (latency == 1 ? 7u : 99u));
+        assert(h.bus.fabric().statistics().completed == completed);
+    }
+    throws<std::invalid_argument>([] { Harness invalid(Port::default_config(), {}, true, 0, 3); });
+    for (auto cfg : cpu_configs()) {
+        cfg.data_cache_hit_cycles = 2;
+        cfg.enable_timed_dram = true;
+        SoC system({r::i(3, 1, 0, true), r::i(4, 1, 0, true)}, cfg);
+        system.cpu().set_register(1, 0x100); system.memory().write(0x100, c::word_bytes(42));
+        bool delayed_hit = false;
+        for (unsigned n = 0; n < 10000 && system.cpu().completed_instructions() < 2; ++n) {
+            system.tick();
+            if (cfg.cpu_execution == soc::RV32Core::Execution::Pipelined) {
+                const auto& trace = *system.cpu().last_pipeline_cycle();
+                delayed_hit |= trace.memory_stall && trace.pc[3] && *trace.pc[3] == 4;
+            } else delayed_hit |= system.cpu().pc() == 4 && system.cpu().last_cycle()->bus_wait;
+        }
+        assert(system.cpu().completed_instructions() == 2 && system.cpu().registers().read(4) == 42 && delayed_hit &&
+               system.dram_timing().statistics().reads > 0);
+    }
+}
 
 static void fill_dma_race_and_backpressure() {
     Harness h;
@@ -206,6 +242,23 @@ static void fill_dma_race_and_backpressure() {
     full.bus.take(occupying);
     full.read(0x200);
     assert(full.port.cache().statistics().fills == 2 && full.port.cache().statistics().read_misses == 2);
+}
+
+static void store_after_earlier_snoop() {
+    Harness h;
+    h.memory.write(0x100, c::word_bytes(0));
+    h.read(0x100); // The following store hits a resident line.
+    const auto tag = h.port.submit(0, c::BusOperation::Write, 0x100, 4, c::word_bytes(0x11223344));
+    // The other write commits first; the CPU write must win on that byte.
+    h.memory.write(0x100, {0xee});
+    assert(h.finish(tag).status == Status::Success);
+    assert(c::load32(h.memory.inspect(0x100, 4)) == 0x11223344);
+    assert(c::load32(h.read(0x100)) == 0x11223344);
+    // A bus without an observer still updates a write-hit on acknowledgement.
+    h.memory.set_write_observer({});
+    const auto unobserved = h.port.submit(0, c::BusOperation::Write, 0x100, 4, c::word_bytes(0xaabbccdd));
+    assert(h.finish(unobserved).status == Status::Success);
+    assert(c::load32(h.read(0x100)) == 0xaabbccdd);
 }
 
 static void replacement_boundaries_and_errors() {
@@ -298,6 +351,6 @@ int main() {
              interconnect::pcie::Timing::SemiSynchronous, interconnect::pcie::Timing::Split})
             compare_cached_and_uncached(cpu_config, timing);
     }
-    fill_dma_race_and_backpressure(); replacement_boundaries_and_errors();
+    configurable_hit_latency(); fill_dma_race_and_backpressure(); store_after_earlier_snoop(); replacement_boundaries_and_errors();
     std::cout << "PASS CPU Cache: RV32 pipeline + both multi-cycle controllers, MMU protection, hit/miss timing, MMIO bypass, DMA snooping/races, faults\n";
 }

@@ -35,9 +35,9 @@ inline c::Bytes pattern(std::size_t size = 512) {
 inline void seed_hdd(SoC& system, const c::Bytes& data = pattern()) {
     system.disk().power_on(); system.disk().advance(system.disk().config().spin_up_ms);
     system.disk().submit_write_lba(0, data);
-    assert(system.disk().run_until_idle(100));
+    if (!system.disk().run_until_idle(100)) throw std::runtime_error("disk seed timed out");
     const auto result = system.disk().take_completion();
-    assert(result && result->status == devices::hdd::Status::Success);
+    if (!result || result->status != devices::hdd::Status::Success) throw std::runtime_error("disk seed failed");
 }
 template<class Predicate> void until(SoC& system, Predicate predicate, std::uint64_t limit = 200000) {
     while (!predicate() && limit--) system.tick();

@@ -20,6 +20,19 @@ public:
     // 只读观察：Rank 发出的地址/命令由所有 DRAM chip 共同接收。
     const DRAMChip& dram_chip(std::size_t index) const { return dram_chips_.at(index); }
 
+    // Broadcast a timed controller's bank command to all chips in the rank.
+    void activate(std::size_t bank, std::size_t row) {
+        if (bank >= geometry_.dram_chip.banks || row >= geometry_.dram_chip.bank.rows)
+            throw std::out_of_range("rank ACT outside geometry");
+        for (const auto& chip : dram_chips_)
+            if (!chip.bank(bank).is_precharged()) throw std::logic_error("rank ACT requires a closed bank");
+        for (auto& chip : dram_chips_) chip.bank(bank).activate(row);
+    }
+    void precharge(std::size_t bank) {
+        if (bank >= geometry_.dram_chip.banks) throw std::out_of_range("rank PRE outside geometry");
+        for (auto& chip : dram_chips_) chip.bank(bank).precharge();
+    }
+
     Word read(std::size_t word_address) {
         Word value = 0;
         for (std::size_t i = 0; i < dram_chips_.size(); ++i) {

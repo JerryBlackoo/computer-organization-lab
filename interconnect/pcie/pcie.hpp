@@ -69,6 +69,11 @@ struct Endpoint {
     std::function<Bytes(Address, std::size_t)> read;
     std::function<void(Address, const Bytes&)> write;
     std::string name;
+    // Optional per-beat asynchronous backend; absence retains fixed-latency behavior.
+    // Stateful backends must provide cancel to discard a synchronous timeout.
+    std::function<bool(Tag, Operation, Address, std::size_t)> prepare{};
+    std::function<void(Tag, Address)> release{};
+    std::function<void(Tag, Address)> cancel{};
 };
 
 // Shared TRANSACTION scheduler for textbook timings. NOT a PCIe wire/PHY simulator.
@@ -137,7 +142,8 @@ private:
         std::size_t endpoint = 0, beat = 0;
         std::uint64_t ready_at = 0;
         Phase phase = Phase::Address;
-        bool mapped = false, req = false, ack = false;
+        bool mapped = false, req = false, ack = false, endpoint_wait = false;
+        bool backend_started = false, backend_ready = false;
         Status status = Status::Success;
         std::string error;
         Bytes received;
@@ -206,12 +212,33 @@ private:
         j.ready_at = stats_.ticks + latency;
         j.phase = Phase::Wait;
         if (config_.timing == Timing::Asynchronous) j.req = trace_.req = true;
+        if (config_.timing != Timing::Split && endpoints_[j.endpoint].prepare) {
+            try {
+                j.backend_started = true;
+                j.backend_ready = endpoints_[j.endpoint].prepare(j.tag, j.request.operation, address(j), j.request.beat_bytes);
+            } catch (const std::exception& error) {
+                if (endpoints_[j.endpoint].cancel) endpoints_[j.endpoint].cancel(j.tag, address(j));
+                j.status = Status::BackendError; j.error = error.what();
+            }
+        }
     }
     bool transfer(Job& j) {
         trace_job(j, Phase::Data);
         const auto& e = endpoints_[j.endpoint];
         const auto n = j.request.beat_bytes;
+        const auto beat_address = address(j);
+        j.endpoint_wait = false;
+        bool prepared = false;
         try {
+            if (e.prepare && !j.backend_ready) {
+                if (!e.prepare(j.tag, j.request.operation, beat_address, n)) {
+                    j.endpoint_wait = true;
+                    trace_.phase = Phase::Wait; ++stats_.wait_ticks;
+                    if (config_.timing == Timing::Split) { trace_.link_busy = false; trace_.sender = Sender::None; }
+                    return false;
+                }
+            }
+            prepared = bool(e.prepare);
             if (j.request.operation == Operation::Read) {
                 if (!e.read) throw std::runtime_error("endpoint is not readable");
                 auto bytes = e.read(address(j), n);
@@ -231,6 +258,8 @@ private:
         } catch (...) {
             j.status = Status::BackendError; j.error = "non-standard backend exception";
         }
+        if (prepared && e.release) e.release(j.tag, beat_address);
+        j.backend_started = j.backend_ready = false;
         return j.status != Status::Success || j.beat == j.request.beats;
     }
     void finish(Job j) {
@@ -259,14 +288,28 @@ private:
             trace_job(j, Phase::Wait);
             const bool sync = config_.timing == Timing::Synchronous;
             const auto elapsed = stats_.ticks - (j.ready_at - std::max(1u, endpoints_[j.endpoint].preparation_ticks));
+            if (j.backend_started && !j.backend_ready) {
+                try { j.backend_ready = endpoints_[j.endpoint].prepare(j.tag, j.request.operation, address(j), j.request.beat_bytes); }
+                catch (const std::exception& error) {
+                    j.status = Status::BackendError; j.error = error.what();
+                    if (endpoints_[j.endpoint].cancel) endpoints_[j.endpoint].cancel(j.tag, address(j));
+                    finish(std::move(j)); active_.reset(); return;
+                }
+            }
             if ((sync && elapsed < config_.synchronous_wait) || (!sync && stats_.ticks < j.ready_at)) {
                 ++stats_.wait_ticks;
                 if (config_.timing == Timing::SemiSynchronous) trace_.wait_n = false;
                 return;
             }
-            if (sync && stats_.ticks < j.ready_at) {
+            if (sync && (stats_.ticks < j.ready_at || (j.backend_started && !j.backend_ready))) {
+                if (j.backend_started && endpoints_[j.endpoint].cancel) endpoints_[j.endpoint].cancel(j.tag, address(j));
                 j.status = Status::Timeout; j.error = "device exceeded fixed synchronous preparation budget";
                 finish(std::move(j)); active_.reset(); return;
+            }
+            if (!sync && j.backend_started && !j.backend_ready) {
+                ++stats_.wait_ticks;
+                if (config_.timing == Timing::SemiSynchronous) trace_.wait_n = false;
+                return;
             }
             trace_.phase = Phase::Response; ++stats_.response_phases;
             if (config_.timing == Timing::Asynchronous) j.ack = trace_.ack = true;
@@ -282,6 +325,29 @@ private:
             return;
         }
         const bool done = transfer(j);
+        if (j.endpoint_wait) {
+            if (config_.timing == Timing::Synchronous) {
+                if (endpoints_[j.endpoint].cancel) endpoints_[j.endpoint].cancel(j.tag, address(j));
+                j.status = Status::Timeout; j.error = "device exceeded fixed synchronous preparation budget";
+                finish(std::move(j)); active_.reset();
+            } else if (config_.timing == Timing::SemiSynchronous) trace_.wait_n = false;
+            return;
+        }
+        if (!done && j.request.burst && config_.timing == Timing::Synchronous && endpoints_[j.endpoint].prepare) {
+            // Each timed beat gets its own fixed preparation budget, without
+            // repeating the address phase of the burst.
+            j.ready_at = stats_.ticks + std::max(1u, endpoints_[j.endpoint].preparation_ticks);
+            j.phase = Phase::Wait;
+            try {
+                j.backend_started = true;
+                j.backend_ready = endpoints_[j.endpoint].prepare(j.tag, j.request.operation, address(j), j.request.beat_bytes);
+            } catch (const std::exception& error) {
+                j.status = Status::BackendError; j.error = error.what();
+                if (endpoints_[j.endpoint].cancel) endpoints_[j.endpoint].cancel(j.tag, address(j));
+                finish(std::move(j)); active_.reset();
+            }
+            return;
+        }
         if (!done && j.request.burst) return;
         if (config_.timing == Timing::Asynchronous) {
             j.req = trace_.req = false; // ACK stays high for this event, drops only next event.
@@ -309,7 +375,7 @@ private:
             } else {
                 if (transfer(j)) finish(std::move(j));
                 else {
-                    if (!j.request.burst) j.phase = Phase::Address;
+                    if (!j.endpoint_wait && !j.request.burst) j.phase = Phase::Address;
                     pending_.push_back(std::move(j));
                 }
             }

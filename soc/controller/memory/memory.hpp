@@ -61,6 +61,27 @@ public:
         return {local, local / bytes, local % bytes, mapping.module->decode(local / bytes)};
     }
 
+    const dimm::DIMMGeometry& geometry(Address address) const {
+        return locate(address, 1).module->geometry();
+    }
+
+    // Command-level access for an external timed DRAM controller.
+    std::optional<std::size_t> active_row(Address address) const {
+        const auto& mapping = locate(address, 1);
+        const auto target = decode(address).dram;
+        return mapping.module->active_row(target.rank, target.bank);
+    }
+    void activate(Address address) {
+        const auto& mapping = locate(address, 1);
+        const auto target = decode(address).dram;
+        mapping.module->activate(target.rank, target.bank, target.row);
+    }
+    void precharge(Address address) {
+        const auto& mapping = locate(address, 1);
+        const auto target = decode(address).dram;
+        mapping.module->precharge(target.rank, target.bank);
+    }
+
     Bytes read(Address address, std::size_t size) {
         if (size == 0) return {};
         const auto& mapping = locate(address, size); // 整段先验界，避免地址被低位截断而别名。
@@ -79,6 +100,25 @@ public:
         }
         ++statistics_.read_requests;
         statistics_.bytes_read += size;
+        return data;
+    }
+
+    // Non-invasive debug snapshot; unlike read(), this never issues a DRAM
+    // command, alters the active row, or increments the access statistics.
+    Bytes inspect(Address address, std::size_t size) const {
+        if (size == 0) return {};
+        const auto& mapping = locate(address, size);
+        Bytes data(size);
+        const auto local = static_cast<std::size_t>(address - mapping.base);
+        const auto width = mapping.module->geometry().word_bits() / 8;
+        for (std::size_t done = 0; done < size;) {
+            const auto offset = (local + done) % width;
+            const auto count = std::min(size - done, width - offset);
+            const auto word = mapping.module->inspect((local + done) / width);
+            for (std::size_t i = 0; i < count; ++i)
+                data[done + i] = static_cast<std::uint8_t>(word >> ((offset + i) * 8));
+            done += count;
+        }
         return data;
     }
 

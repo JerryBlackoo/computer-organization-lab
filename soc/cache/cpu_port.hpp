@@ -24,8 +24,9 @@ public:
         return {16, 2, 32, WritePolicy::WriteThrough, AllocationPolicy::NoWriteAllocate};
     }
 
-    explicit CpuPort(devices::common::DmaBus& bus, Config config = default_config(), bool enabled = true)
-        : bus_(bus), enabled_(enabled), cache_(
+    explicit CpuPort(devices::common::DmaBus& bus, Config config = default_config(), bool enabled = true,
+                     unsigned hit_cycles = 1)
+        : bus_(bus), enabled_(enabled), hit_cycles_(hit_cycles), cache_(
             [this](Address address, std::size_t size) {
                 if (!request_ || request_->kind != Kind::Fill || address != request_->block || fill_.size() != size)
                     throw std::logic_error("cache fill has no acknowledged bus response");
@@ -35,7 +36,9 @@ public:
                 if (!request_ || request_->kind != Kind::Store || !write_acknowledged_ ||
                     address != request_->address || data != request_->data)
                     throw std::logic_error("cache write has no bus acknowledgement");
-            }, validate(config)) {}
+            }, validate(config)) {
+        if (hit_cycles_ != 1 && hit_cycles_ != 2) throw std::invalid_argument("cache hit must take 1 or 2 cycles");
+    }
     CpuPort(const CpuPort&) = delete;
     CpuPort& operator=(const CpuPort&) = delete;
     CpuPort(CpuPort&&) = delete;
@@ -44,7 +47,7 @@ public:
     Tag submit(devices::common::Master master, Operation operation, std::uint64_t address,
                std::size_t count, Bytes data = {}) override {
         if (master != 0) throw std::invalid_argument("CPU cache port accepts master 0 only");
-        if (request_ || result_) throw std::length_error("CPU cache port busy");
+        if (request_ || result_ || hit_) throw std::length_error("CPU cache port busy");
         if (next_tag_ == std::numeric_limits<Tag>::max()) throw std::overflow_error("CPU cache tags exhausted");
         if ((operation != Operation::Read && operation != Operation::Write) || !count || count > 1024 ||
             (operation == Operation::Write ? data.size() != count : !data.empty()))
@@ -57,7 +60,9 @@ public:
         const bool cached = enabled_ && scalar && address - block + count <= cache_.config().line_bytes &&
             bus_.is_memory(block, cache_.config().line_bytes);
         if (cached && operation == Operation::Read && cache_.contains(physical, count)) {
-            result_ = Result{next_tag_, 0, Status::Success, cache_.read(physical, count), count, {}, false};
+            if (hit_cycles_ == 1)
+                result_ = Result{next_tag_, 0, Status::Success, cache_.read(physical, count), count, {}, false};
+            else hit_ = PendingHit{next_tag_, physical, count};
             return next_tag_++;
         }
 
@@ -71,7 +76,7 @@ public:
         if (next.kind == Kind::Fill) {
             next.forwarded.resize(cache_.config().line_bytes);
             next.forwarded_valid.resize(cache_.config().line_bytes);
-        }
+        } else if (next.kind == Kind::Store) next.forwarded = next.data;
         // 若总线队列已满，submit 原样失败；不留下半接收请求，CPU 可在下一拍重试。
         next.downstream = bus_.submit(0, operation, next.kind == Kind::Fill ? block : address,
             next.kind == Kind::Fill ? cache_.config().line_bytes : count, next.data);
@@ -90,6 +95,11 @@ public:
 
     // 总线先 tick，本控制器再消费响应。不会递归运行总线或 CPU。
     void tick() {
+        if (hit_) {
+            result_ = Result{hit_->tag, 0, Status::Success, cache_.read(hit_->address, hit_->count), hit_->count, {}, false};
+            hit_.reset();
+            return;
+        }
         if (!request_ || !bus_.ready(request_->downstream)) return;
         auto response = bus_.take(request_->downstream);
         response.tag = request_->tag;
@@ -112,6 +122,10 @@ public:
                     write_acknowledged_ = true;
                     cache_.write(request_->address, request_->data);
                     write_acknowledged_ = false;
+                    // The store may span multiple bus beats. Preserve the
+                    // latest committed write to each byte, including snooped
+                    // DMA writes between this store's beats.
+                    cache_.snoop_write(request_->address, request_->forwarded);
                 }
                 response.transferred_bytes = request_->count;
             } else if (request_->kind == Kind::Fill) {
@@ -129,24 +143,30 @@ public:
         if (!enabled_) return;
         cache_.snoop_write(address, data);
         ++statistics_.snoop_writes;
-        if (!request_ || request_->kind != Kind::Fill) return;
-        const auto begin = std::max(std::uint64_t{address}, std::uint64_t{request_->block});
-        const auto end = std::min(std::uint64_t{address} + data.size(),
-                                  std::uint64_t{request_->block} + cache_.config().line_bytes);
+        if (!request_ || request_->kind == Kind::Bypass) return;
+        const bool fill = request_->kind == Kind::Fill;
+        const auto start = fill ? request_->block : request_->address;
+        const auto size = fill ? cache_.config().line_bytes : request_->count;
+        const auto begin = std::max(std::uint64_t{address}, std::uint64_t{start});
+        const auto end = std::min(std::uint64_t{address} + data.size(), std::uint64_t{start} + size);
         for (auto current = begin; current < end; ++current) {
-            const auto offset = static_cast<std::size_t>(current - request_->block);
+            const auto offset = static_cast<std::size_t>(current - start);
             request_->forwarded[offset] = data[static_cast<std::size_t>(current - address)];
-            request_->forwarded_valid[offset] = true;
-            ++statistics_.fill_forwarded_bytes;
+            if (fill) {
+                request_->forwarded_valid[offset] = true;
+                ++statistics_.fill_forwarded_bytes;
+            }
         }
     }
 
     const Cache& cache() const { return cache_; }
     const Statistics& statistics() const { return statistics_; }
     bool enabled() const { return enabled_; }
+    unsigned hit_cycles() const { return hit_cycles_; }
 
 private:
     enum class Kind { Bypass, Fill, Store };
+    struct PendingHit { Tag tag; Address address; std::size_t count; };
     struct Request {
         Tag tag = 0, downstream = 0;
         Address address = 0, block = 0;
@@ -164,7 +184,9 @@ private:
     }
     devices::common::DmaBus& bus_;
     bool enabled_;
+    unsigned hit_cycles_;
     Cache cache_;
+    std::optional<PendingHit> hit_;
     std::optional<Request> request_;
     std::optional<Result> result_;
     Bytes fill_;

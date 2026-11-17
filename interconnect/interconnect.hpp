@@ -14,8 +14,8 @@ public:
     explicit Interconnect(soc::controller::IOMMU& iommu, interconnect::pcie::Config config = {})
         : iommu_(iommu), fabric_(config) {}
     // Adapter endpoints preserve the existing fabric/IOMMU while using TLM ports.
-    void map_memory_endpoint(interconnect::pcie::Endpoint endpoint) {
-        const Range range{endpoint.base, endpoint.size};
+    void map_memory_endpoint(interconnect::pcie::Endpoint endpoint, std::size_t rank_bytes = 0) {
+        const Range range{endpoint.base, endpoint.size, rank_bytes};
         fabric_.map(std::move(endpoint));
         ram_.push_back(range);
     }
@@ -69,8 +69,15 @@ public:
         }
         // Naturally aligned CPU halfwords are one data beat, preserving atomic
         // visibility to DMA observers. MMIO was already restricted to full words.
-        const auto width = physical % 4 == 0 && count % 4 == 0 ? 4u :
+        auto width = physical % 4 == 0 && count % 4 == 0 ? 4u :
             master == 0 && count == 2 && physical % 2 == 0 ? 2u : 1u;
+        for (const auto& range : ram_) {
+            if (range.rank_bytes && physical >= range.base && physical - range.base < range.size &&
+                count <= range.size - (physical - range.base)) {
+                while (width > 1 && (range.rank_bytes % width || (physical - range.base) % width)) width /= 2;
+                break;
+            }
+        }
         return fabric_.submit({master, operation, physical, width, count / width, true, std::move(data)});
     }
     bool ready(devices::common::Tag tag) const override { return fabric_.ready(tag); }
@@ -87,7 +94,7 @@ public:
         return false;
     }
 private:
-    struct Range { std::uint32_t base; std::uint64_t size; };
+    struct Range { std::uint32_t base; std::uint64_t size; std::size_t rank_bytes = 0; };
     soc::controller::IOMMU& iommu_;
     interconnect::pcie::Fabric fabric_;
     std::vector<Range> ram_, mmio_;

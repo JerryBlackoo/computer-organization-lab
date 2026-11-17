@@ -6,11 +6,15 @@
 #include "controller/interrupt/interrupt.hpp"
 #include "controller/pcie/pcie.hpp"
 #include "cache/cpu_port.hpp"
+#include "controller/memory/dram_timing.hpp"
+#include "controller/memory/interleaved_dram_memory.hpp"
 #include "../devices/hdd/hdd.hpp"
 #include "../devices/nvme/nvme.hpp"
 #include "../devices/nic/nic.hpp"
+#include <memory>
 
 namespace colab {
+enum class DramScheduleMode { Off, LegacySingleIssue, InterleavedPipeline };
 struct SoCConfig {
     dimm::DIMMGeometry memory{4, {4, {2, {64, 128, 8}}}}; // 4 x 64 KiB = 256 KiB, 32-bit ranks.
     devices::hdd::Config disk{};
@@ -20,6 +24,23 @@ struct SoCConfig {
     soc::core::pipeline::Options pipeline{};
     bool enable_data_cache = true;
     soc::cache::Config data_cache = soc::cache::CpuPort::default_config();
+    soc::core::mmu::TlbConfig tlb{}; // Appended: applies to both CPU translation models.
+    unsigned instruction_cache_hit_cycles = 1, data_cache_hit_cycles = 1;
+    bool enable_timed_dram = false;
+    soc::controller::DramTiming::Config dram_timing{};
+    DramScheduleMode dram_mode = DramScheduleMode::Off;
+    soc::controller::InterleavedDramScheduler::Config interleaved_dram{};
+
+    DramScheduleMode selected_dram_mode() const {
+        switch (dram_mode) {
+        case DramScheduleMode::Off: return enable_timed_dram ? DramScheduleMode::LegacySingleIssue : dram_mode;
+        case DramScheduleMode::LegacySingleIssue: return dram_mode;
+        case DramScheduleMode::InterleavedPipeline:
+            if (enable_timed_dram) throw std::invalid_argument("legacy and interleaved DRAM modes are mutually exclusive");
+            return dram_mode;
+        }
+        throw std::invalid_argument("unknown DRAM scheduling mode");
+    }
 };
 
 // CPU data: MMU -> write-through Cache -> shared bus -> Memory -> DIMM.
@@ -31,12 +52,34 @@ public:
         NvmeBase = 0x20000000, NicBase = 0x30000000;
     static constexpr unsigned HddMaster = 1, NvmeMaster = 2, NicMaster = 3;
     explicit SoC(std::vector<std::uint32_t> program = {0x00000063}, SoCConfig config = {})
-        : dimm_(config.memory), memory_(dimm_), bus_(iommu_, config.fabric),
-          data_port_(bus_, config.data_cache, config.enable_data_cache), pcie_(bus_),
+        : dimm_(config.memory), memory_(dimm_), dram_timing_(memory_, config.dram_timing),
+          dram_mode_(config.selected_dram_mode()),
+          interleaved_dram_(dram_mode_ == DramScheduleMode::InterleavedPipeline
+              ? std::make_unique<soc::controller::InterleavedDramMemory>(memory_, 0, config.interleaved_dram) : nullptr),
+          bus_(iommu_, config.fabric),
+          data_port_(bus_, config.data_cache, config.enable_data_cache, config.data_cache_hit_cycles), pcie_(bus_),
           disk_(config.disk), hdd_(disk_, bus_, HddMaster, irq_, 1),
           nvme_(bus_, NvmeMaster, irq_, 2), nic_(bus_, NicMaster, irq_, 3),
-          cpu_(std::move(program), config.cpu_mode, 256, {}, config.cpu_execution, config.pipeline) {
-        bus_.map_memory(0, config.memory.capacity_bytes(), memory_);
+          cpu_(std::move(program), config.cpu_mode, 256, {}, config.cpu_execution, config.pipeline,
+               soc::core::FaultHandling::HostException, soc::RV32Core::Translation::Teaching, config.tlb) {
+        if (dram_mode_ != DramScheduleMode::Off) {
+            interconnect::pcie::Endpoint endpoint{0, config.memory.capacity_bytes(), 2,
+                [this](auto address, auto bytes) { return memory_.read(address, bytes); },
+                [this](auto address, const auto& bytes) { memory_.write(address, bytes); }, "clocked DIMM"};
+            endpoint.prepare = [this](auto tag, auto op, auto address, auto bytes) {
+                return interleaved_dram_ ? interleaved_dram_->prepare(tag, op, address, bytes)
+                                         : dram_timing_.prepare(tag, op, address, bytes);
+            };
+            endpoint.release = [this](auto tag, auto address) {
+                if (interleaved_dram_) interleaved_dram_->complete(tag, address);
+                else dram_timing_.complete(tag, address);
+            };
+            endpoint.cancel = [this](auto tag, auto address) {
+                if (interleaved_dram_) interleaved_dram_->cancel(tag, address);
+                else dram_timing_.cancel(tag, address);
+            };
+            bus_.map_memory_endpoint(std::move(endpoint), config.memory.word_bits() / 8);
+        } else bus_.map_memory(0, config.memory.capacity_bytes(), memory_);
         pcie_.attach(HddBase, 0x100, hdd_);
         pcie_.attach(IrqBase, 0x100, irq_);
         pcie_.attach(NvmeBase, 0x2000, nvme_);
@@ -48,6 +91,8 @@ public:
     // then interrupt sampling and one CPU clock. No requester ticks the fabric.
     // Newly submitted fabric requests wait until at least the next system tick.
     void tick() {
+        if (interleaved_dram_) interleaved_dram_->tick();
+        else if (dram_mode_ == DramScheduleMode::LegacySingleIssue) dram_timing_.tick();
         bus_.tick();
         data_port_.tick();
         hdd_.tick(); nvme_.tick(); nic_.tick();
@@ -57,6 +102,8 @@ public:
     }
     soc::RV32Core& cpu() { return cpu_; }
     soc::controller::Memory& memory() { return memory_; }
+    const soc::controller::DramTiming& dram_timing() const { return dram_timing_; }
+    const soc::controller::InterleavedDramMemory* interleaved_dram() const { return interleaved_dram_.get(); }
     dimm::DIMM& dimm() { return dimm_; }
     Interconnect& bus() { return bus_; }
     const soc::Cache& data_cache() const { return data_port_.cache(); }
@@ -71,6 +118,9 @@ public:
 private:
     dimm::DIMM dimm_;
     soc::controller::Memory memory_;
+    soc::controller::DramTiming dram_timing_;
+    DramScheduleMode dram_mode_;
+    std::unique_ptr<soc::controller::InterleavedDramMemory> interleaved_dram_;
     soc::controller::IOMMU iommu_;
     Interconnect bus_;
     soc::cache::CpuPort data_port_;

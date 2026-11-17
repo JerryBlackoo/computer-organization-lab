@@ -35,6 +35,11 @@ public:
 
     const DIMMGeometry& geometry() const { return geometry_; }
     const Rank& rank(std::size_t index) const { return ranks_.at(index); }
+    void activate(std::size_t rank, std::size_t bank, std::size_t row) { ranks_.at(rank).activate(bank, row); }
+    void precharge(std::size_t rank, std::size_t bank) { ranks_.at(rank).precharge(bank); }
+    std::optional<std::size_t> active_row(std::size_t rank, std::size_t bank) const {
+        return ranks_.at(rank).dram_chip(0).bank(bank).state().active_row;
+    }
 
     // 输入为已完成外部片选、基址转换后的 DIMM 局部字地址。
     DIMMAddress decode(std::size_t word_address) const {
@@ -55,6 +60,24 @@ public:
     Word read(std::size_t word_address) {
         const auto selected = select_rank(word_address);
         return ranks_[selected].read(word_address % geometry_.rank.word_count());
+    }
+    // Debug snapshot: inspect storage cells without issuing PRE/ACT/READ or
+    // changing row buffers and command statistics, even during a timed request.
+    Word inspect(std::size_t word_address) const {
+        const auto selected = select_rank(word_address);
+        const auto local = word_address % geometry_.rank.word_count();
+        const auto& rank = ranks_[selected];
+        Word value = 0;
+        for (std::size_t i = 0; i < geometry_.rank.dram_chips; ++i) {
+            const auto& chip = rank.dram_chip(i);
+            const auto address = chip.decode(local);
+            const auto& bank = chip.bank(address.bank);
+            for (std::size_t bit = 0; bit < geometry_.rank.dram_chip.bank.data_bits; ++bit) {
+                if (bank.inspect_cell(address.row, address.column, bit).read())
+                    value |= Word{1} << (i * geometry_.rank.dram_chip.bank.data_bits + bit);
+            }
+        }
+        return value;
     }
     void write(std::size_t word_address, Word data) {
         const auto selected = select_rank(word_address);
