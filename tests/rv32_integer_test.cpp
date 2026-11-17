@@ -66,7 +66,7 @@ int main() {
         CPU zero({encode(0, true, 0, 0, 0xffffffff)}, mode, 16, {}, execution, {config != 3});
         zero.step_instruction(1000); require(zero.registers().read(0) == 0, "integer instruction changed x0");
     }
-    for (const auto word : {0x02001013u, 0x02005013u, 0x40001013u, 0x4020f1b3u, 0x0220d1b3u}) {
+    for (const auto word : {0x02001013u, 0x02005013u, 0x40001013u, 0x4020f1b3u, 0x0420d1b3u}) {
         bool rejected = false;
         try { (void)colab::soc::core::Decoder{}.decode_rv32(word); }
         catch (const std::invalid_argument&) { rejected = true; }

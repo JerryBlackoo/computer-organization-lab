@@ -2,7 +2,8 @@
 
 流水线是现有 `RV32Core` 的执行模式，整机 `SoC` 默认启用。它沿用
 `Decoder::decode_rv32`、32 位 ALU、寄存器堆、架构状态、MMU、机器中断/CSR 与异步数据总线，
-支持 RV32I 基础整数/访存/控制流/异常指令，以及六种 Zicsr、FENCE.I、MRET、SRET、SFENCE.VMA 和 WFI；没有另建一套机器指令语义。
+支持 RV32I 基础整数/访存/控制流/异常指令、RV32M 整数乘除，以及六种 Zicsr、FENCE.I、MRET、SRET、SFENCE.VMA 和 WFI；没有另建一套机器指令语义。
+乘除先锁存操作数，再逐拍复用 32 位 ALU 完成 32 次位迭代；混合符号乘法和有符号除法可能增加结果修正拍。等待时保持 EX/ID/IF，允许更老指令退休，完成后正常转发。除零和有符号商溢出在启动拍完成；详见 [RV32M 说明](../../../docs/rv32-muldiv.md)。
 字节/半字 Load 沿用 Load-use 停顿与 WB 转发；窄 Store 保留真实事务宽度和相邻字节。
 原独立 MIPS 流水线、专用译码/编码器、取指与单周期执行模块已移除。
 

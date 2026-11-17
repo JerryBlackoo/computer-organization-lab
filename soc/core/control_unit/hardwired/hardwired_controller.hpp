@@ -13,8 +13,8 @@ public:
     rv32::ControlSignals signals(const DecodedInstruction& instruction, rv32::Feedback flags) const override {
         return generator_.generate(phase(), instruction, flags);
     }
-    void clock(const DecodedInstruction& instruction, rv32::Feedback) override {
-        timing_.on_clock_pulse(logic_.next_phase(phase(), instruction), instruction_complete());
+    void clock(const DecodedInstruction& instruction, rv32::Feedback feedback) override {
+        timing_.on_clock_pulse(logic_.next_phase(phase(), instruction, feedback), instruction_complete());
     }
     rv32::Phase phase() const override { return timing_.phase(); }
     TimingState timing() const override { return timing_.timing(); }

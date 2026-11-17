@@ -36,7 +36,7 @@ enum class PCSource { Sequential, Branch, JumpImmediate, JumpRegister };
 enum class Compare { Equal, NotEqual, LessSigned, GreaterEqualSigned, LessUnsigned, GreaterEqualUnsigned };
 
 // Historical field name: for all branch types it carries the selected comparator's result.
-struct Feedback { bool equal = false; };
+struct Feedback { bool equal = false, muldiv_busy = false, muldiv_done = false; };
 
 // 水平型控制字：独立使能允许相容微操作并行；枚举选择器表示互斥输入。
 struct ControlSignals {
@@ -46,6 +46,8 @@ struct ControlSignals {
     bool ir_in = false;
     bool decode = false;
     bool operands_in = false;
+    bool muldiv_start = false;
+    bool muldiv_step = false;
     bool alu_in = false;
     bool address_in = false;
     bool condition_in = false;

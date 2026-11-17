@@ -7,7 +7,7 @@ RV32 的多周期与五级流水线共享 32 位基础部件和同一个指令�
 | 部件/组织 | 实现 | 作用 |
 |---|---|---|
 | 16 位单总线 | `single_bus.hpp`、`bus.hpp`、`soc/noc/noc.hpp` | Y/Z 暂存，三态总线，C1～C10 微操作 |
-| 32 位基础部件 | `dedicated/alu.hpp`、`alu_control.hpp`、`register_file.hpp`、`memory.hpp` | 与指令编码无关的 ALU、双读寄存器堆、程序/数据存储 |
+| 32 位基础部件 | `dedicated/alu.hpp`、`alu_control.hpp`、`muldiv.hpp`、`register_file.hpp`、`memory.hpp` | 与指令编码无关的 ALU、逐位乘除功能单元、双读寄存器堆、程序/数据存储 |
 | RV32 多周期 | `rv32.hpp` | 接收硬布线或微程序控制线，跨拍保存 MAR/MDR/IR/A/B/ALUOut |
 | RV32 流水线 | `../pipeline/pipeline.hpp` | IF/ID、ID/EX、EX/MEM、MEM/WB 保存各指令状态，转发/停顿/冲刷 |
 | RV32 译码 | `../decoder/decoder.hpp` | 同一 ADD/SUB/ADDI/LW/SW/BEQ 与 CSR/MRET 子集，I/S/B 字节立即数 |

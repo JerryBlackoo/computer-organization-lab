@@ -40,6 +40,7 @@ struct RV32State {
     dedicated::RegisterFile gprs;
     std::uint32_t pc = 0, mar = 0, mdr = 0, ir = 0;
     std::uint32_t a = 0, b = 0, alu_out = 0;
+    dedicated::MulDiv muldiv;
     bool equal = false;
     std::optional<std::uint32_t> pending_instruction, pending_data;
 };
@@ -93,6 +94,15 @@ public:
             const auto ports = state.gprs.read(decoded.rs1, decoded.rs2);
             step.next.a = ports.bus_a;
             step.next.b = ports.bus_b;
+        }
+        if (signals.muldiv_start || signals.muldiv_step) {
+            if (signals.muldiv_start) step.next.muldiv.start(signals.alu_op, state.a, state.b);
+            else step.next.muldiv.step(alu_);
+            if (step.next.muldiv.done()) {
+                const auto result = step.next.muldiv.result();
+                step.alu = dedicated::ALUResult{result, result == 0, false};
+                step.next.alu_out = result;
+            }
         }
         if (signals.alu_in || signals.address_in || signals.condition_in) {
             const auto b = signals.operand_b == OperandB::Immediate
@@ -166,6 +176,8 @@ private:
             (s.instruction_to_mdr && !s.instruction_read) ||
             (s.data_to_mdr && !s.data_read) ||
             (s.mar_from_pc && s.address_in) ||
+            (s.muldiv_start && s.muldiv_step) ||
+            ((s.muldiv_start || s.muldiv_step) && (s.alu_in || s.address_in || s.condition_in || s.retire)) ||
             (s.retire != s.pc_write) ||
             ((s.register_write || s.memory_write) && !s.retire) ||
             (s.register_write && s.memory_write))

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../timing_generator/timing_generator.hpp"
+#include "../control_signals.hpp"
 #include "../../decoder/instruction.hpp"
 
 #include <stdexcept>
@@ -9,7 +10,7 @@ namespace colab::soc::core::control_unit {
 
 class ControlLogic {
 public:
-    rv32::Phase next_phase(rv32::Phase phase, const DecodedInstruction& instruction) const {
+    rv32::Phase next_phase(rv32::Phase phase, const DecodedInstruction& instruction, rv32::Feedback feedback = {}) const {
         using P = rv32::Phase;
         switch (phase) {
         case P::FetchAddress: return P::FetchRead;
@@ -21,6 +22,7 @@ public:
         case P::FetchLatch: return P::ReadOperands;
         case P::ReadOperands: return P::Execute;
         case P::Execute:
+            if (is_muldiv(instruction.operation) && !feedback.muldiv_done) return P::Execute;
             switch (instruction.operation) {
             case Operation::Lw: case Operation::Lb: case Operation::Lbu:
             case Operation::Lh: case Operation::Lhu: return P::LoadRead;

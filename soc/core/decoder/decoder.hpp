@@ -59,6 +59,19 @@ public:
             return instruction;
         }
         if (instruction.opcode == 0x33) {
+            if (instruction.funct7 == 0x01) {
+                switch (instruction.funct3) {
+                case 0: instruction.operation = Operation::Mul; break;
+                case 1: instruction.operation = Operation::Mulh; break;
+                case 2: instruction.operation = Operation::Mulhsu; break;
+                case 3: instruction.operation = Operation::Mulhu; break;
+                case 4: instruction.operation = Operation::Div; break;
+                case 5: instruction.operation = Operation::Divu; break;
+                case 6: instruction.operation = Operation::Rem; break;
+                case 7: instruction.operation = Operation::Remu; break;
+                }
+                return instruction;
+            }
             if (instruction.funct7 != 0 && !(instruction.funct7 == 0x20 &&
                 (instruction.funct3 == 0 || instruction.funct3 == 5)))
                 throw std::invalid_argument("unsupported RV32 R-type instruction");

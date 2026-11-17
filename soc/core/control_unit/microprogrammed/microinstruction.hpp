@@ -5,7 +5,7 @@
 namespace colab::soc::core::control_unit::microprogrammed {
 
 using MicroAddress = std::uint16_t;
-enum class Sequence { Increment, Jump, Dispatch, IfEqual };
+enum class Sequence { Increment, Jump, Dispatch, IfEqual, IfMulDivDone };
 
 // 操作控制字段 + 顺序控制字段。phase 只用于日志/阶段统计，不参与控制信号生成。
 struct Microinstruction {

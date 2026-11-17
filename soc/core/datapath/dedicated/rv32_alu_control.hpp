@@ -10,6 +10,14 @@ inline ALUCtr rv32_alu_control(Operation operation) {
     case Operation::Lb: case Operation::Lbu: case Operation::Lh: case Operation::Lhu:
     case Operation::Sb: case Operation::Sh: return ALUCtr::Addu;
     case Operation::Sub: return ALUCtr::Subu;
+    case Operation::Mul: return ALUCtr::Mul;
+    case Operation::Mulh: return ALUCtr::Mulh;
+    case Operation::Mulhsu: return ALUCtr::Mulhsu;
+    case Operation::Mulhu: return ALUCtr::Mulhu;
+    case Operation::Div: return ALUCtr::Div;
+    case Operation::Divu: return ALUCtr::Divu;
+    case Operation::Rem: return ALUCtr::Rem;
+    case Operation::Remu: return ALUCtr::Remu;
     case Operation::And: case Operation::Andi: return ALUCtr::And;
     case Operation::Or: case Operation::Ori: return ALUCtr::Or;
     case Operation::Xor: case Operation::Xori: return ALUCtr::Xor;

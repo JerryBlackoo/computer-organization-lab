@@ -41,13 +41,14 @@ struct CycleTrace {
     // Occupancy at the beginning of the cycle: IF, ID, EX, MEM, WB.
     std::array<std::optional<std::uint32_t>, 5> pc{};
     Forward forward_a = Forward::Register, forward_b = Forward::Register;
-    bool data_stall = false, memory_stall = false, system_stall = false;
+    bool data_stall = false, memory_stall = false, system_stall = false, muldiv_stall = false;
     bool interrupt_entry = false, redirected = false;
     unsigned flushed = 0;
     std::uint32_t target = 0;
     std::optional<Retirement> retirement;
     std::optional<RV32Trap> trap{};
     bool wfi_wait = false;
+    std::optional<datapath::dedicated::MulDiv> muldiv{};
 };
 
 // RV32 execution engine owned by RV32Core. Architectural state, MMU, memory,
@@ -112,6 +113,7 @@ public:
             // If the IRQ level disappears, restart squashed instructions at state.pc.
             trace.flushed = unsigned(if_id_.valid) + unsigned(id_ex_.valid);
             if_id_ = {}; id_ex_ = {}; mem_wb_ = {};
+            muldiv_.reset();
             if (ex_mem_.request) {
                 auto pending = ex_mem_;
                 if (access(pending, memory, mmu, bus, interrupts)) { mem_wb_ = pending; ex_mem_ = {}; }
@@ -141,7 +143,27 @@ public:
             return finish(std::move(trace));
         }
 
-        auto next_mem = execute(id_ex_, trace);
+        Latch next_mem;
+        if (id_ex_.valid && !id_ex_.fault && is_muldiv(id_ex_.decoded.operation)) {
+            if (!muldiv_.busy()) {
+                // Capture forwarded sources once. Producers can retire while EX is held.
+                if (options_.forwarding) {
+                    id_ex_.a = operand(id_ex_.decoded.rs1, id_ex_.a, trace.forward_a);
+                    id_ex_.b = operand(id_ex_.decoded.rs2, id_ex_.b, trace.forward_b);
+                }
+                muldiv_.start(datapath::dedicated::rv32_alu_control(id_ex_.decoded.operation), id_ex_.a, id_ex_.b);
+            } else muldiv_.step(alu_);
+            trace.muldiv = muldiv_;
+            if (!muldiv_.done()) {
+                // Drain older MEM/WB once, while keeping EX, ID and IF in place.
+                mem_wb_ = next_wb; ex_mem_ = {};
+                trace.muldiv_stall = true;
+                return finish(std::move(trace));
+            }
+            next_mem = id_ex_;
+            next_mem.value = muldiv_.result();
+            muldiv_.reset();
+        } else next_mem = execute(id_ex_, trace);
         Latch next_ex, next_id;
         auto next_pc = fetch_pc_;
         if (next_mem.valid && !next_mem.fault &&
@@ -181,6 +203,7 @@ public:
     const Latch& id_ex() const { return id_ex_; }
     const Latch& ex_mem() const { return ex_mem_; }
     const Latch& mem_wb() const { return mem_wb_; }
+    const datapath::dedicated::MulDiv& muldiv() const { return muldiv_; }
 
 private:
     static bool system(Operation op) {
@@ -192,6 +215,7 @@ private:
             op != Operation::Lui && op != Operation::Auipc && op != Operation::Jal;
     }
     static bool uses_b(Operation op) {
+        // M operations are register ALU operations too, including rs2 hazards.
         return is_register_alu(op) || is_store(op) || is_conditional_branch(op);
     }
     static bool writes(Operation op) {
@@ -294,7 +318,7 @@ private:
             }
             const bool immediate = is_alu_immediate(instruction.operation) || is_load(instruction.operation) ||
                 is_store(instruction.operation);
-            const auto result = datapath::dedicated::ALU{}.evaluate(datapath::dedicated::rv32_alu_control(instruction.operation),
+            const auto result = alu_.evaluate(datapath::dedicated::rv32_alu_control(instruction.operation),
                 slot.a, immediate ? static_cast<std::uint32_t>(instruction.immediate) : slot.b);
             slot.value = result.result;
             slot.address = result.result;
@@ -389,6 +413,7 @@ private:
     }
     void reset_frontend(std::uint32_t pc) {
         if_id_ = {}; id_ex_ = {}; ex_mem_ = {}; mem_wb_ = {};
+        muldiv_.reset();
         fetch_pc_ = pc;
         draining_irq_ = false;
     }
@@ -420,6 +445,8 @@ private:
 
     Options options_;
     Latch if_id_, id_ex_, ex_mem_, mem_wb_;
+    datapath::dedicated::MulDiv muldiv_;
+    datapath::dedicated::ALU alu_;
     std::uint32_t fetch_pc_ = 0;
     bool initialized_ = false, draining_irq_ = false;
     std::uint64_t pulses_ = 0, retired_ = 0, bus_waits_ = 0;

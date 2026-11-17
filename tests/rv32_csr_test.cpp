@@ -66,7 +66,7 @@ int main() {
                 cpu.registers().read(3) == (write ? 99u : 0u), "read-only CSR access suppression/precision differed");
         }
         auto misa = make_cpu({encode(1, 2, 1, 0x301)}, config); misa.set_register(1, 0xffffffff); misa.step_instruction(1000);
-        require(misa.registers().read(2) == 0x40140100 && misa.interrupts().read(0x301) == 0x40140100, "misa WARL value changed");
+        require(misa.registers().read(2) == 0x40141100 && misa.interrupts().read(0x301) == 0x40141100, "misa WARL value changed");
         for (unsigned funct3 : {1u, 2u, 3u, 5u, 6u, 7u}) {
             std::vector<std::uint32_t> program(64, 0x00000063); program[0] = 0x30200073;
             program[16] = encode(funct3, 3, 1);

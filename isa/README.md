@@ -5,26 +5,28 @@ ISA（Instruction Set Architecture，指令集体系结构）是软件与硬件�
 **指令系统是 ISA 的核心部分；ISA 还包括数据类型、寄存器、存储与控制状态等约定。**
 
 本目录只保留这一份文档。下面先说明 ISA 的范围，再列出本项目已经定义的教学机器约定。
-整机实现 RV32I 40 条基础指令的教学功能模型，并加入 Zicsr、Zifencei 和部分 M/S/U 特权功能。
+整机实现 RV32I 40 条基础指令和 RV32M 八条整数乘除指令的教学功能模型，并加入 Zicsr、Zifencei 和部分 M/S/U 特权功能。
 另保留原 16 位教学核心。流水线与多周期执行遵循同一套 RV32 语义；当前未做架构兼容认证。
 
 ## 整机 RV32 的软件可见约定
 
 | 项目 | 现有约定 |
 |---|---|
-| 指令 | ADD/SUB/ADDI，AND/OR/XOR、SLL/SRL/SRA、SLT/SLTU 及其立即数形式，LUI/AUIPC、JAL/JALR、LB/LBU/LH/LHU/LW、SB/SH/SW、六种整数条件分支、FENCE、ECALL/EBREAK；另有 CSRRW/CSRRS/CSRRC、CSRRWI/CSRRSI/CSRRCI、MRET、SRET、SFENCE.VMA、WFI 和 FENCE.I；未实现编码报告非法指令 |
+| 指令 | ADD/SUB/ADDI，AND/OR/XOR、SLL/SRL/SRA、SLT/SLTU 及其立即数形式，MUL/MULH/MULHSU/MULHU、DIV/DIVU/REM/REMU，LUI/AUIPC、JAL/JALR、LB/LBU/LH/LHU/LW、SB/SH/SW、六种整数条件分支、FENCE、ECALL/EBREAK；另有 CSRRW/CSRRS/CSRRC、CSRRWI/CSRRSI/CSRRCI、MRET、SRET、SFENCE.VMA、WFI 和 FENCE.I；未实现编码报告非法指令 |
 | 寄存器 | x0～x31，各 32 位；x0 恒为零；算术按 2³² 回绕，不产生有符号溢出陷阱 |
 | 编址与数据 | 32 位字节地址、小端；字节任意对齐，半字/字要求 2/4 字节对齐；LB/LH 扩展符号位，LBU/LHU 补零；SB/SH 只写低 8/16 位；MMIO 只接受对齐 32 位访问；独立 Core 的数组以机器字初始化 |
 | PC | 指令长四字节，顺序 PC+4；条件分支/JAL 目标为当前指令 PC 加有符号字节偏移；JALR 目标为寄存器加立即数后清除最低位；IALIGN=32，无延迟槽。JAL/JALR 写回 PC+4 |
 | 控制状态 | M/S/U 三级；M/S 陷入 CSR、medeleg/mideleg 和 16 项 PMP 子集；机器中断 cause=11/3/7，监督态中断 cause=9/1/5；支持 Direct/Vectored 与 MRET/SRET；共享 RAM 多周期核心支持 satp Bare/Sv32 与 Svade；旧 ROM 流水线不支持 Sv32 |
 | 同步异常 | SystemC 整机按委托进入 mtvec/stvec.BASE，分别保存故障 PC、原特权级、cause、tval 和使能栈；故障指令不退休。ECALL 的 U/S/M cause 分别为 8/9/11，EBREAK 为 cause=3；独立教学 Core 默认保留 HostException，构造时可选择 MachineTrap |
 | 内存保护 | S/U-mode 的所有取指/读写先检查 PMP，未匹配默认拒绝，Cache 命中不能绕过；S/U-mode 的机器 CSR/MRET 非法；MPRV 可让 M-mode 数据访问采用 S/U-mode 权限；Bare 下 S/U 共用 PMP 策略 |
-| CSR 与屏障 | CSR 读写抑制遵循 x0/零 uimm 规则；misa 固定为 0x40140100（RV32/I/S/U），mhartid=0；CPU 访存按序确认后退休，FENCE 保守串行化，FENCE.I 同步后续本核取指；SFENCE.VMA 保守清空教学 TLB，受 TVM 限制 |
+| CSR 与屏障 | CSR 读写抑制遵循 x0/零 uimm 规则；misa 固定为 0x40141100（RV32/I/M/S/U），mhartid=0；CPU 访存按序确认后退休，FENCE 保守串行化，FENCE.I 同步后续本核取指；SFENCE.VMA 保守清空教学 TLB，受 TVM 限制 |
 | 等待中断 | M/S-mode WFI 退休一次并等待局部使能的 pending 输入，S-mode 受 TW 限制；唤醒不受全局使能屏蔽，允许陷入时保存下一条指令 PC；U-mode WFI 非法；等待期间外设和时间继续推进 |
 
 整机使用 MMU、数据 Cache、共享总线和 DIMM；设备寄存器采用 MMIO。
 旧 SoC 的程序 ROM 与数据存储分开；SystemC 平台的多周期 CPU 从 DIMM 经指令 Cache 和 MMU 取指。
 流水级数、转发、停顿、控制器微指令和 Cache 参数属于实现选择，不改变上述指令语义。
+RV32M 除零商为全 1、余数为被除数；有符号商向零截断，最小负数除以 −1 得原值、余数为 0。
+逐位算法和执行拍的限制见 [RV32M 运算说明](../docs/rv32-muldiv.md)。
 具体实现见 [RV32Core](../soc/core/rv32_core.hpp)、[RV32 译码](../soc/core/decoder/decoder.hpp)、
 [流水线](../soc/core/pipeline/README.md)与[多周期控制](../docs/control-unit.md)。
 

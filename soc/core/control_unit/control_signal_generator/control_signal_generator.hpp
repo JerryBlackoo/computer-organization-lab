@@ -35,6 +35,11 @@ public:
                 ? rv32::OperandB::Immediate : rv32::OperandB::Register;
             signals.alu_op = is_conditional_branch(instruction.operation)
                 ? ALUCtr::Subu : datapath::dedicated::rv32_alu_control(instruction.operation);
+            if (is_muldiv(instruction.operation)) {
+                signals.muldiv_start = !feedback.muldiv_busy;
+                signals.muldiv_step = feedback.muldiv_busy;
+                break;
+            }
             signals.condition_in = is_conditional_branch(instruction.operation);
             switch (instruction.operation) {
             case Operation::Bne: signals.compare = rv32::Compare::NotEqual; break;

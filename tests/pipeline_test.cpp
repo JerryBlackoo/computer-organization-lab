@@ -118,6 +118,41 @@ static void waits_and_side_effects() {
     assert(bus.reads == 2 && bus.writes == 1 && bus.words[4] == 27 && cpu.bus_waits() >= 3);
     assert(bus.addresses == std::vector<std::uint64_t>({0, 4, 4}));
 
+    // A delayed older load can hold a younger M instruction while its WB
+    // producer disappears. Both operands must retain the forwarded value.
+    for (bool forwarding : {false, true}) {
+        Bus delayed; delayed.words[0] = 7; delayed.reject = 3;
+        const auto mul = r(3, 1, 1) | 0x02000000u;
+        const auto div = r(4, 3, 2) | 0x02004000u;
+        auto arithmetic = pipeline({i(1, 0, 10), i(2, 0, 0, true), mul, div}, forwarding);
+        arithmetic.connect_bus(delayed);
+        retire_bus(arithmetic, delayed, 4);
+        assert(arithmetic.registers().read(3) == 100 && arithmetic.registers().read(4) == 14);
+        assert(delayed.reads == 1 && arithmetic.bus_waits() >= 3);
+    }
+
+    // IRQ while an M operation is running behind a just-completed external
+    // load must drain that irreversible read, squash M and restart at its PC.
+    for (bool forwarding : {false, true}) {
+        Bus delayed; delayed.words[0] = 7;
+        std::vector<std::uint32_t> program(32, i(0, 0, 0));
+        program[0] = i(2, 0, 0, true); program[1] = r(3, 1, 1) | 0x02000000u;
+        program[2] = i(4, 3, 1); program[16] = 0x30200073u;
+        auto irq = pipeline(program, forwarding); irq.set_register(1, 3); irq.set_register(3, 99);
+        irq.connect_bus(delayed);
+        irq.interrupts().write(0x305, 64); irq.interrupts().write(0x304, 1u << 11); irq.interrupts().write(0x300, 8);
+        for (unsigned n = 0; n < 100 && !irq.pipeline().muldiv().busy(); ++n) { delayed.tick(); irq.tick(); }
+        assert(irq.pipeline().muldiv().busy() && irq.pipeline().mem_wb().external_effect);
+        irq.interrupts().set_external(true); delayed.tick(); irq.tick();
+        assert(!irq.pipeline().muldiv().busy() && irq.registers().read(2) == 7 &&
+               irq.registers().read(3) == 99 && irq.interrupts().entries() == 0 && delayed.reads == 1);
+        delayed.tick(); irq.tick();
+        assert(irq.interrupts().entries() == 1 && irq.interrupts().read(0x341) == 4);
+        irq.interrupts().set_external(false);
+        retire_bus(irq, delayed, 3); // MRET, retried MUL, dependent ADDI.
+        assert(irq.registers().read(3) == 9 && irq.registers().read(4) == 10 && delayed.reads == 1);
+    }
+
     Bus wrong_path;
     auto branch = pipeline({beq(0, 0, 12), sw(2, 1, 0), i(3, 1, 0, true), i(4, 0, 9)});
     branch.set_register(1, 0x10000000); branch.connect_bus(wrong_path);

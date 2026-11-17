@@ -29,7 +29,7 @@ int main() {
             const auto decoded = decoder.decode_rv32(r(rd, rs, 31));
             assert(decoded.rd == rd && decoded.rs1 == rs && decoded.rs2 == 31);
         }
-    for (auto word : {0u, 0xFFFFFFFFu, 0x022081B3u, 0x022091B3u, 0x02001013u,
+    for (auto word : {0u, 0xFFFFFFFFu, 0x042081B3u, 0x042091B3u, 0x02001013u,
                       0x00003003u, 0x00003023u, 0x00002063u, 0x00200073u})
         expect_throw<std::invalid_argument>([&] { decoder.decode_rv32(word); });
     // 旧 16 位 Decoder 的接口保持可用。

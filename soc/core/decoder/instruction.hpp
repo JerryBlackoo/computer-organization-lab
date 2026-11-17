@@ -34,7 +34,8 @@ inline std::uint16_t encode(Instruction instruction) {
 
 namespace colab::soc::core {
 
-enum class Operation { Add, Sub, Addi, Lw, Sw, Beq, Bne, Blt, Bge, Bltu, Bgeu,
+enum class Operation { Add, Sub, Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu,
+                       Addi, Lw, Sw, Beq, Bne, Blt, Bge, Bltu, Bgeu,
                        Lui, Auipc, Jal, Jalr, Csrrw, Csrrs, Mret,
                        And, Or, Xor, Sll, Srl, Sra, Slt, Sltu,
                        Andi, Ori, Xori, Slli, Srli, Srai, Slti, Sltiu,
@@ -71,10 +72,14 @@ inline bool is_alu_immediate(Operation op) {
     return op == Operation::Addi || op == Operation::Andi || op == Operation::Ori || op == Operation::Xori ||
         op == Operation::Slli || op == Operation::Srli || op == Operation::Srai || op == Operation::Slti || op == Operation::Sltiu;
 }
+inline bool is_muldiv(Operation op) {
+    return op == Operation::Mul || op == Operation::Mulh || op == Operation::Mulhsu || op == Operation::Mulhu ||
+        op == Operation::Div || op == Operation::Divu || op == Operation::Rem || op == Operation::Remu;
+}
 inline bool is_register_alu(Operation op) {
     return op == Operation::Add || op == Operation::Sub || op == Operation::And || op == Operation::Or ||
         op == Operation::Xor || op == Operation::Sll || op == Operation::Srl || op == Operation::Sra ||
-        op == Operation::Slt || op == Operation::Sltu;
+        op == Operation::Slt || op == Operation::Sltu || is_muldiv(op);
 }
 
 inline bool is_conditional_branch(Operation op) {

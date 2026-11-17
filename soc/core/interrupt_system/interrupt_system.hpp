@@ -110,7 +110,7 @@ public:
         case 0x143: return stval_;
         case 0x144: return pending() & mideleg_;
         case 0x300: return mstatus_;
-        case 0x301: return 0x40140100u; // RV32 + I + S + U; fixed WARL ISA configuration.
+        case 0x301: return 0x40141100u; // RV32 + I + M + S + U; fixed WARL ISA configuration.
         case 0x302: return medeleg_;
         case 0x303: return mideleg_;
         case 0x304: return mie_;

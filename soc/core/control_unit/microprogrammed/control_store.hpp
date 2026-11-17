@@ -91,6 +91,11 @@ public:
         memory_sequence(184, 28, 8, 2, false); // LHU
         memory_sequence(192, 36, 3, 1, false); // SB
         memory_sequence(195, 36, 3, 2, false); // SH
+        // Each M instruction uses four words: read, start, iterate, writeback.
+        // 200..231 do not overlap extended arithmetic or memory sequences.
+        for (std::size_t i = 0; i < multiply_divide.size(); ++i)
+            muldiv(static_cast<MicroAddress>(200 + i * 4),
+                   datapath::dedicated::rv32_alu_control(multiply_divide[i]));
     }
 
     const Microinstruction& at(MicroAddress address) const {
@@ -132,6 +137,8 @@ public:
         default:
             for (std::size_t i = 0; i < extended_arithmetic.size(); ++i)
                 if (operation == extended_arithmetic[i]) return static_cast<MicroAddress>(96 + i * 3);
+            for (std::size_t i = 0; i < multiply_divide.size(); ++i)
+                if (operation == multiply_divide[i]) return static_cast<MicroAddress>(200 + i * 4);
         }
         throw std::invalid_argument("no microprogram for operation");
     }
@@ -147,6 +154,9 @@ private:
     static constexpr std::array<Operation, 16> extended_arithmetic{
         Operation::And, Operation::Or, Operation::Xor, Operation::Sll, Operation::Srl, Operation::Sra, Operation::Slt, Operation::Sltu,
         Operation::Andi, Operation::Ori, Operation::Xori, Operation::Slli, Operation::Srli, Operation::Srai, Operation::Slti, Operation::Sltiu};
+    static constexpr std::array<Operation, 8> multiply_divide{
+        Operation::Mul, Operation::Mulh, Operation::Mulhsu, Operation::Mulhu,
+        Operation::Div, Operation::Divu, Operation::Rem, Operation::Remu};
     Microinstruction& put(MicroAddress address, rv32::Phase phase) {
         words_.at(address) = Microinstruction{};
         words_[address]->phase = phase;
@@ -167,6 +177,18 @@ private:
         execute.control.alu_op = op;
         execute.control.alu_in = true;
         finish(address + 2, rv32::Phase::WriteBack).control.register_write = true;
+    }
+    void muldiv(MicroAddress address, datapath::dedicated::ALUCtr op) {
+        put(address, rv32::Phase::ReadOperands).control.operands_in = true;
+        auto& start = put(address + 1, rv32::Phase::Execute);
+        start.control.muldiv_start = true; start.control.alu_op = op;
+        start.sequence = Sequence::IfMulDivDone;
+        start.next_address = address + 3; start.alternate_address = address + 2;
+        auto& iterate = put(address + 2, rv32::Phase::Execute);
+        iterate.control.muldiv_step = true;
+        iterate.sequence = Sequence::IfMulDivDone;
+        iterate.next_address = address + 3; iterate.alternate_address = address + 2;
+        finish(address + 3, rv32::Phase::WriteBack).control.register_write = true;
     }
     void effective_address(MicroAddress address) {
         auto& word = put(address, rv32::Phase::Execute);

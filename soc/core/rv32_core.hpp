@@ -31,6 +31,7 @@ struct RV32CycleTrace {
     core::pipeline::Execution execution = core::pipeline::Execution::MultiCycle;
     std::optional<core::RV32Trap> trap{};
     bool wfi_wait = false;
+    std::optional<core::datapath::dedicated::MulDiv> muldiv{};
 };
 
 struct RV32RetirementTrace {
@@ -52,8 +53,11 @@ public:
                       std::size_t data_words = 256,
                       core::control_unit::microprogrammed::ControlStore store = {},
                       Execution execution = Execution::MultiCycle, core::pipeline::Options options = {},
-                      core::FaultHandling faults = core::FaultHandling::HostException, Translation translation = Translation::Teaching)
-        : program_(std::move(program)), memory_(data_words), control_(mode, std::move(store)),
+                      core::FaultHandling faults = core::FaultHandling::HostException, Translation translation = Translation::Teaching,
+                      core::mmu::TlbConfig tlb = {})
+        : sv32_(tlb, translation == Translation::Architectural ? core::Sv32::WalkTiming::OnePtePerTick
+                                                               : core::Sv32::WalkTiming::Eager),
+          mmu_(tlb), program_(std::move(program)), memory_(data_words), control_(mode, std::move(store)),
           data_words_(data_words), execution_(execution), pipeline_(options), faults_(faults), translation_(translation) {
         if (translation != Translation::Teaching && translation != Translation::Architectural)
             throw std::invalid_argument("unknown address translation model");
@@ -105,7 +109,7 @@ private:
             control_.wait_clock();
             return;
         }
-        const auto signals = control_.signals(decoded_, {state_.equal});
+        const auto signals = control_.signals(decoded_, {state_.equal, state_.muldiv.busy(), state_.muldiv.done()});
         std::optional<std::uint32_t> external_instruction;
         if (instruction_bus_ && signals.instruction_read && !state_.pending_instruction) {
             if (state_.mar % 4)
@@ -204,20 +208,23 @@ private:
                 throw core::RV32Fault(core::RV32FaultCause::IllegalInstruction, state_.pc, step.next.ir);
             }
         }
-        const RV32CycleTrace trace{mode(), control_.rv32_phase(), control_.rv32_timing(), signals,
+        RV32CycleTrace trace{mode(), control_.rv32_phase(), control_.rv32_timing(), signals,
             mode() == Mode::Microprogrammed
                 ? std::optional<core::control_unit::microprogrammed::MicroAddress>(control_.microprogrammed().micro_pc())
                 : std::nullopt,
             step.alu, signals.retire};
+        if (signals.muldiv_start || signals.muldiv_step) trace.muldiv = step.next.muldiv;
         const RV32RetirementTrace retired{completed_instructions() + 1, clock_pulses() + 1,
             clock_pulses() + 1 - last_retirement_pulse_, state_.pc, step.next.pc, state_.ir,
             mode(), step.register_write, step.memory_write};
 
         // Local writes commit after control validation. External writes commit on
         // the bus data phase; the CPU retires only after their acknowledgement.
-        control_.clock(next_decoded, {step.next.equal});
+        control_.clock(next_decoded, {step.next.equal, step.next.muldiv.busy(), step.next.muldiv.done()});
         if (signals.system && decoded_.operation == core::Operation::SfenceVma) {
-            mmu_.flush_tlb(); sv32_.flush(); // Legal over-fence for every rs1/rs2 form.
+            mmu_.flush_tlb(); // Teaching format has no ASID: retain its conservative full fence.
+            sv32_.flush(decoded_.rs1 ? std::optional<std::uint32_t>(state_.a) : std::nullopt,
+                        decoded_.rs2 ? std::optional<unsigned>(state_.b & 511u) : std::nullopt);
         }
         if (step.memory_write && !bus_)
             memory_.write(step.memory_write->address, step.memory_write->value, step.memory_write->bytes);
@@ -315,6 +322,7 @@ private:
         cycle.execution = execution_;
         cycle.trap = trace.trap;
         cycle.wfi_wait = trace.wfi_wait;
+        cycle.muldiv = trace.muldiv;
         last_cycle_ = cycle;
         last_pipeline_cycle_ = trace;
         if (trace.retirement) {
@@ -334,6 +342,7 @@ private:
         control_.abort_instruction();
         state_.pc = target;
         state_.pending_instruction.reset(); state_.pending_data.reset();
+        state_.muldiv.reset();
         pending_instruction_bus_.reset(); pending_bus_.reset(); sv32_.cancel();
         decoded_ = {};
         last_cycle_ = trace;

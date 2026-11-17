@@ -17,6 +17,8 @@ public:
         case Sequence::Dispatch: return store.entry(decoded.operation);
         case Sequence::IfEqual:
             return flags.equal ? instruction.next_address : instruction.alternate_address;
+        case Sequence::IfMulDivDone:
+            return flags.muldiv_done ? instruction.next_address : instruction.alternate_address;
         }
         throw std::logic_error("invalid microinstruction sequence field");
     }
