@@ -18,6 +18,40 @@ static unsigned translate(Sv32& vm, InterruptSystem& s, Memory& m, Access access
     auto pa = vm.translate(address, 4, access, 0x9000, s, nullptr, m);
     require(pa.has_value(), "local page walk did not finish"); return *pa;
 }
+static void timed_walk_one_pte_per_call() {
+    struct ImmediateBus final : common::DmaBus {
+        explicit ImmediateBus(Memory& memory) : memory(memory) {}
+        Memory& memory;
+        unsigned submitted = 0;
+        std::optional<common::BusResult> result;
+        common::Tag submit(common::Master, common::BusOperation operation, std::uint64_t address,
+                           std::size_t bytes, common::Bytes = {}) override {
+            require(operation == common::BusOperation::Read && bytes == 4 && !result, "unexpected timed walk transaction");
+            ++submitted;
+            result = common::BusResult{submitted, 0, colab::interconnect::pcie::Status::Success,
+                                       common::word_bytes(memory.read(static_cast<std::uint32_t>(address))), 4, {}, false};
+            return submitted;
+        }
+        bool ready(common::Tag tag) const override { return result && result->tag == tag; }
+        common::BusResult take(common::Tag tag) override {
+            require(ready(tag), "bad timed walk tag"); auto value = *result; result.reset(); return value;
+        }
+        bool is_memory(std::uint32_t, std::size_t) const override { return true; }
+    };
+    for (bool external : {false, true}) {
+        auto s = state(); auto m = memory(); ImmediateBus bus(m);
+        Sv32 vm({}, Sv32::WalkTiming::OnePtePerTick);
+        auto first = vm.translate(VA, 4, Access::Read, 0x9000, s, external ? &bus : nullptr, m);
+        require(!first && vm.busy() && vm.statistics().reads == 1 && (!external || bus.submitted == 1),
+                "timed walk consumed more than one PTE on its first tick");
+        auto second = vm.translate(VA, 4, Access::Read, 0x9000, s, external ? &bus : nullptr, m);
+        require(second && *second == 0x5000 && !vm.busy() && vm.statistics().reads == 2 &&
+                (!external || bus.submitted == 2), "timed walk did not finish on its second PTE tick");
+        auto hit = vm.translate(VA, 4, Access::Read, 0x9000, s, external ? &bus : nullptr, m);
+        require(hit && *hit == 0x5000 && vm.statistics().hits == 1 && (!external || bus.submitted == 2),
+                "timed TLB hit incorrectly walked again");
+    }
+}
 template<class Action> static void fault(Action action, RV32FaultCause cause, unsigned address = VA) {
     try { action(); } catch (const RV32Fault& f) {
         require(f.cause() == cause && f.pc() == 0x9000 && f.value() == address, "wrong fault cause/virtual PC/tval"); return;
@@ -333,7 +367,7 @@ static void mprv_matrix() {
     }
 }
 int main() {
-    permissions(); fault_matrix(); page_tables_and_tlb(); async_walk(); cpu_paths();
+    timed_walk_one_pte_per_call(); permissions(); fault_matrix(); page_tables_and_tlb(); async_walk(); cpu_paths();
     architectural_switching(); cpu_fault_contract(); mprv_matrix();
     std::cout << "PASS Sv32: 4K/4M, U/S, SUM/MXR/MPRV, A/D faults, PMP, ASIDs/global/fence, 34-bit rejection, delayed/cancelled/error walks\n";
 }

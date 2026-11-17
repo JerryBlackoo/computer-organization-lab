@@ -4,7 +4,7 @@
 
 namespace colab::soc::core::mmu {
 
-// 全相联、固定 4 KiB 页的 TLB 表项。替换状态由 TLB 单独维护。
+// 固定 4 KiB 页的 TLB 表项；完整 VPN 作 Tag。分组与替换状态由 TLB 维护。
 struct TLBEntry {
     bool valid = false;              // V：槽是否可参与命中判断；不代表页面是否驻留。
     Address virtual_page = 0;        // Tag：完整的 20 位虚页号。

@@ -17,6 +17,7 @@ namespace colab::soc::core {
 class MMU {
 public:
     explicit MMU(std::size_t tlb_entries = 16) : tlb_(tlb_entries) {}
+    explicit MMU(mmu::TlbConfig config) : tlb_(config) {}
 
     // 默认关闭分页，兼容现有 16 位 CPU。切换页表时清除旧地址空间的快表。
     void enable_paging(mmu::Address page_table_base, mmu::PageTableWalker::ReadEntry reader,

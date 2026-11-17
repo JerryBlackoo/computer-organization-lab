@@ -2,8 +2,9 @@
 
 #include "../interrupt_system/interrupt_system.hpp"
 #include "../../../devices/common/dma_bus.hpp"
-#include <array>
+#include "tlb/geometry.hpp"
 #include <optional>
+#include <vector>
 
 namespace colab::soc::core {
 // Sv32 + Svade: A=0 or a store with D=0 faults for guest software to repair.
@@ -11,6 +12,7 @@ namespace colab::soc::core {
 // One walk is shared by instruction/data access; redirects drain abandoned reads.
 class Sv32 {
 public:
+    enum class WalkTiming { Eager, OnePtePerTick };
     struct Statistics {
         std::uint64_t hits = 0, misses = 0, walks = 0, reads = 0, faults = 0, flushes = 0;
         std::uint64_t page_faults = 0, access_faults = 0;
@@ -20,12 +22,35 @@ public:
         unsigned level = 0, asid = 0;
         std::uint32_t vpn = 0, pte = 0;
     };
+    struct WalkStatus {
+        bool busy = false, pending = false, discarded = false;
+        unsigned level = 0;
+        std::uint64_t pte_address = 0;
+    };
+    explicit Sv32(mmu::TlbConfig config = {}, WalkTiming timing = WalkTiming::Eager)
+        : timing_(timing), geometry_(config), entries_(geometry_.capacity()), victims_(geometry_.sets(), 0) {}
     const Statistics& statistics() const { return stats_; }
-    const std::array<Entry, 16>& entries() const { return entries_; }
+    const std::vector<Entry>& entries() const { return entries_; }
+    const mmu::TlbGeometry& geometry() const { return geometry_; }
     bool busy() const { return walk_.has_value() || pending_.has_value(); }
+    WalkStatus walk_status() const {
+        WalkStatus status{busy(), pending_.has_value(), discarded_, 0, 0};
+        if (walk_) {
+            status.level = walk_->level;
+            const auto index = (walk_->request.address >> (12 + 10 * walk_->level)) & 1023u;
+            status.pte_address = walk_->table + 4 * index;
+        }
+        return status;
+    }
     void cancel() { walk_.reset(); if (pending_) discarded_ = true; }
-    void flush() {
-        cancel(); for (auto& entry : entries_) entry.valid = false; ++stats_.flushes;
+    // An explicit ASID excludes global entries; no ASID includes all ASIDs/global.
+    // A selected address invalidates the entire matching leaf, including superpages.
+    void flush(std::optional<std::uint32_t> address = std::nullopt, std::optional<unsigned> asid = std::nullopt) {
+        cancel();
+        for (auto& entry : entries_)
+            if ((!address || matches_address(entry, *address)) &&
+                (!asid || (!entry.global && entry.asid == (*asid & 511u)))) entry.valid = false;
+        ++stats_.flushes;
     }
     void drain() {
         if (discarded_ && pending_ && pending_bus_->ready(*pending_)) {
@@ -45,10 +70,17 @@ public:
             if (!state.sv32_enabled(access)) { state.check_memory(address, bytes, access, pc); return address; }
             if (!walk_) {
                 const auto asid = (request.satp >> 22) & 511u;
-                for (const auto& entry : entries_) if (entry.valid && (entry.global || entry.asid == asid) &&
-                    (entry.level ? entry.vpn >> 10 == address >> 22 : entry.vpn == address >> 12)) {
-                    ++stats_.hits;
-                    return leaf(entry.pte, entry.level, request, state);
+                // Probe one candidate set per page size in the same shared array.
+                // A superpage key omits all ten subpage bits, even if sets > 1024.
+                for (unsigned level : {0u, 1u}) {
+                    const auto first = geometry_.first(set_index(address, level));
+                    for (std::size_t i = first; i < first + geometry_.ways(); ++i) {
+                        const auto& entry = entries_[i];
+                        if (entry.level == level && matches_address(entry, address) && (entry.global || entry.asid == asid)) {
+                            ++stats_.hits;
+                            return leaf(entry.pte, entry.level, request, state);
+                        }
+                    }
                 }
                 ++stats_.misses; ++stats_.walks;
                 walk_ = Walk{request, std::uint64_t(request.satp & 0x3fffffu) << 12, 1, false};
@@ -82,12 +114,18 @@ public:
                 walk.global = walk.global || (pte & 32);
                 if (pte & 10) {
                     const auto physical = leaf(pte, walk.level, request, state);
-                    entries_[victim_++ % entries_.size()] = {true, walk.global, walk.level,
-                        (request.satp >> 22) & 511u, address >> 12, pte};
+                    const auto set = set_index(address, walk.level);
+                    auto& victim = victims_[set];
+                    entries_[geometry_.first(set) + victim] = {true, walk.global, walk.level,
+                        (request.satp >> 22) & 511u, (address >> (12 + 10 * walk.level)) << (10 * walk.level), pte};
+                    victim = (victim + 1) % geometry_.ways();
                     walk_.reset(); return physical;
                 }
                 if (!walk.level || (pte & 0xd0)) page_fault(request); // Non-leaf U/A/D are reserved.
                 walk.table = std::uint64_t(pte >> 10) << 12; --walk.level;
+                // The system timing contract permits at most one completed PTE
+                // per CPU tick, even when a cached/local response is immediate.
+                if (timing_ == WalkTiming::OnePtePerTick) return std::nullopt;
             }
         } catch (const RV32Fault& error) {
             ++stats_.faults;
@@ -99,6 +137,12 @@ public:
         throw std::logic_error("Sv32 walk has no result");
     }
 private:
+    std::size_t set_index(std::uint32_t address, unsigned level) const {
+        return geometry_.set_index(address >> (12 + 10 * level));
+    }
+    static bool matches_address(const Entry& entry, std::uint32_t address) {
+        return entry.valid && (entry.level ? entry.vpn >> 10 == address >> 22 : entry.vpn == address >> 12);
+    }
     struct Request {
         std::uint32_t address, pc, satp, status;
         unsigned bytes;
@@ -138,8 +182,10 @@ private:
     std::optional<devices::common::Tag> pending_;
     devices::common::DmaBus* pending_bus_ = nullptr;
     bool discarded_ = false;
-    std::array<Entry, 16> entries_{};
-    std::size_t victim_ = 0;
+    WalkTiming timing_;
+    mmu::TlbGeometry geometry_;
+    std::vector<Entry> entries_;
+    std::vector<std::size_t> victims_; // Independent round-robin cursor per set; hits do not move it.
     Statistics stats_;
 };
 } // namespace colab::soc::core

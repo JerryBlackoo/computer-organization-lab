@@ -28,7 +28,7 @@ struct CycleTrace {
 class Core {
 public:
     // PC/MAR 是 16 位字节地址；每条教学指令占 2 字节。
-    explicit Core(const std::vector<isa::Instruction>& program) {
+    explicit Core(const std::vector<isa::Instruction>& program, core::mmu::TlbConfig tlb = {}) : mmu_(tlb) {
         if (program.size() > 0x8000u) {
             throw std::length_error("program exceeds 16-bit address space");
         }
