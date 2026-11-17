@@ -5,11 +5,12 @@
 
 ## 已选的板型/工具链
 
-- 单 hart，RV32 小端，32 位物理平台；支持 RV32I、六种 Zicsr、Zifencei，M/S/U 及本文约定的特权子集。
-- 实验编译参数：`--target=riscv32 -march=rv32i_zicsr_zifencei -mabi=ilp32 -mno-relax -msmall-data-limit=0`；不提供 M/A/C/F/D。
+- 单 hart，RV32 小端，32 位物理平台；支持 RV32IM、六种 Zicsr、Zifencei，M/S/U 及本文约定的特权子集。
+- 实验编译参数：`--target=riscv32 -march=rv32im_zicsr_zifencei -mabi=ilp32 -mno-relax -msmall-data-limit=0`；不提供 A/C/F/D。
 - 默认 RAM `[0,0x40000)`，四个 64KiB Rank，共 64 个 4KiB 页；默认模拟周期 50us，CLINT timebase 为 20000Hz。
 - 共享 RAM 取指的正式平台使用硬布线多周期核心。微程序多周期核心也有独立总线执行测试。
   原 ROM 流水线/独立本地 ROM 实验不支持 Sv32；显式拒绝不支持的组合，不把它描述为分页机器。
+- 正式平台每个 CPU 调用最多完成一个 PTE 读取；现有 Svade 由软件修复 A/D，不实现硬件自动置位。
 - 不提供完整 Linux/SBI/FDT/通用板级启动 ABI，不宣称架构认证或精确 DDR/PCIe 频率。
 
 ## 物理地址与外设
@@ -77,7 +78,10 @@ S 内核需保留/约定这套服务或提供自己的 M stub，不能直接把 
   不提交 link/PC，也不对错误目标开始新一轮走表。
 - Sv32 允许 34 位 PA，本平台只寻址 32 位；高根/叶 PPN不可达时明确访问故障，绝不截断别名。
   页表必须位于 RAM，不能以有副作用的 MMIO 充当 PTE 存储。
-- 16 项合并 I/D TLB，ASID/global；所有 SFENCE.VMA 地址/ASID 变体保守全刷（含 global），是允许的 over-fence。
+- 合并 I/D TLB 默认 16 项全相联，可由 `SoCConfig.tlb={总项数,路数}` 配为组相联；每组独立轮转。
+  4KiB 用 `VA>>12` 选组，4MiB 用 `VA>>22` 选组，查找两个页级别对应的候选组，共享总容量。
+  ASID/global、具体 Index/Tag、配置示例见 [TLB 组织](TLB_ORGANIZATION.md)。
+  SFENCE.VMA 支持地址/ASID 选择失效；rs2 非 x0 时只处理指定 ASID 的非 global 项，rs2=x0 才包含 global。
   U 执行 SFENCE 非法；TVM=1 拦截 S 的 satp 读写和 SFENCE。SUM/MXR 改变立即重检，不依赖 fence。
 - 走表通过数据 Cache → 请求队列 → TLM → 原 Fabric/内存控制器 → DIMM，不用宿主页表 callback 替代。
   缓存命中的 PTE 不必每次访问 DIMM；统计区分页表事务提交数与 TLB 命中数，不虚报 DRAM 访问。

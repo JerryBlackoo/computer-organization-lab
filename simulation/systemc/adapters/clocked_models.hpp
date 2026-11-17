@@ -16,12 +16,13 @@ public:
     SC_HAS_PROCESS(CacheModule);
 #endif
     CacheModule(sc_core::sc_module_name name, const sc_core::sc_event& clock,
-                QueuedTlmPort& port, soc::cache::Config config = soc::cache::CpuPort::default_config(), bool enabled = true)
-        : sc_core::sc_module(name), port_(port), config_(config), enabled_(enabled) {
+                QueuedTlmPort& port, soc::cache::Config config = soc::cache::CpuPort::default_config(), bool enabled = true,
+                unsigned hit_cycles = 1)
+        : sc_core::sc_module(name), port_(port), config_(config), enabled_(enabled), hit_cycles_(hit_cycles) {
         reset();
         SC_METHOD(on_clock); sensitive << clock; dont_initialize();
     }
-    void reset() { snoops_.clear(); hardware_.reset(new soc::cache::CpuPort(port_, config_, enabled_)); }
+    void reset() { snoops_.clear(); hardware_.reset(new soc::cache::CpuPort(port_, config_, enabled_, hit_cycles_)); }
     devices::common::Tag submit(devices::common::Master master, devices::common::BusOperation operation,
                                 std::uint64_t address, std::size_t count, devices::common::Bytes data = {}) override {
         return hardware_->submit(master, operation, address, count, std::move(data));
@@ -42,6 +43,7 @@ private:
     QueuedTlmPort& port_;
     soc::cache::Config config_;
     bool enabled_;
+    unsigned hit_cycles_;
     std::vector<std::pair<std::uint32_t, devices::common::Bytes>> snoops_;
     std::unique_ptr<soc::cache::CpuPort> hardware_;
 };
@@ -135,14 +137,15 @@ public:
 #endif
     CpuModule(sc_core::sc_module_name name, const sc_core::sc_event& clock,
               CacheModule& instructions, CacheModule& data, std::uint32_t entry,
-              soc::core::FaultHandling faults = soc::core::FaultHandling::MachineTrap)
-        : sc_core::sc_module(name), instructions_(instructions), data_(data), entry_(entry), faults_(faults) {
+              soc::core::FaultHandling faults = soc::core::FaultHandling::MachineTrap,
+              soc::core::mmu::TlbConfig tlb = {})
+        : sc_core::sc_module(name), instructions_(instructions), data_(data), entry_(entry), faults_(faults), tlb_(tlb) {
         reset();
         SC_METHOD(on_clock); sensitive << clock; dont_initialize();
     }
     void reset() {
         hardware_.reset(new soc::RV32Core({}, soc::RV32Core::Mode::Hardwired, 256, {},
-            soc::RV32Core::Execution::MultiCycle, {}, faults_, soc::RV32Core::Translation::Architectural));
+            soc::RV32Core::Execution::MultiCycle, {}, faults_, soc::RV32Core::Translation::Architectural, tlb_));
         hardware_->connect_bus(data_);
         hardware_->connect_instruction_bus(instructions_);
         hardware_->set_boot_pc(entry_);
@@ -166,6 +169,7 @@ private:
     CacheModule& data_;
     std::uint32_t entry_;
     soc::core::FaultHandling faults_;
+    soc::core::mmu::TlbConfig tlb_;
     std::unique_ptr<soc::RV32Core> hardware_;
 };
 

@@ -125,6 +125,10 @@ DIMM 对象也不被重建，不承诺清空其行缓冲、bank 时序或累计�
 /tmp/colab-systemc-build/systemc_machine --elf /absolute/path/program.elf --cycles 10000
 ```
 
+可用 `--timed-dram` 启用 DRAM 命令状态机，用 `--dram-trcd`、`--dram-trp`、`--dram-tcas`
+设置正整数周期数；`--icache-hit-cycles` 和 `--dcache-hit-cycles` 可选 1 或 2。时序模型和
+调试旁路的约束见 [DRAM 时序说明](DRAM_TIMING.md)。
+
 ELF 入口来自文件头，不接受额外 `--entry`。装载器接受小端 ELF32、RISC-V、ET_EXEC、软浮点且
 无压缩指令标志的固定地址静态映像；`PT_LOAD` 段的虚拟地址须等于物理地址且位于 RAM 内。
 它检查段表、对齐、重叠及入口，复制文件内容并在冷启动时清零 `p_memsz - p_filesz` 的 BSS。
@@ -136,7 +140,7 @@ RAM 默认四 Rank、256KiB（每 Rank 64KiB），范围 `[0,0x40000)`，镜像�
 
 现有 CPU 支持 ADD/SUB/ADDI，AND/OR/XOR、SLL/SRL/SRA、SLT/SLTU 及其立即数形式，
 LUI/AUIPC、JAL/JALR、LB/LBU/LH/LHU/LW、SB/SH/SW、六种整数条件分支、FENCE、ECALL/EBREAK，
-覆盖 RV32I 的 40 条基础指令；另支持六种 Zicsr 指令、Zifencei 的 FENCE.I、MRET、SRET、SFENCE.VMA 和 WFI。
+覆盖 RV32I 的 40 条基础指令和 RV32M 的八条乘除指令；另支持六种 Zicsr 指令、Zifencei 的 FENCE.I、MRET、SRET、SFENCE.VMA 和 WFI。乘除逐拍算法和时间模型见 [RV32M 说明](rv32-muldiv.md)。
 寄存器移位只采用移位量的低五位；逻辑立即数先扩展符号位，再参与位运算。
 数据采用小端：LB/LH 扩展符号位，LBU/LHU 补零；SB/SH 仅写低 8/16 位，保留相邻字节。
 字节可在任意地址访问，半字和字分别要求 2/4 字节对齐；未对齐访问在发起事务前产生异常。
@@ -248,12 +252,14 @@ stvec.Vectored 的监督态中断入口为 BASE+4×cause，同步异常始终进
 mstatus.TVM/TW/TSR 可由 M-mode 设置，分别拦截 S-mode 的 satp/SFENCE.VMA、WFI 和 SRET，
 产生精确非法指令异常；M-mode 不受这三位拦截。TW 的实现选择立即报告异常。
 U-mode 的 SRET/SFENCE.VMA/WFI 及 S-mode CSR 访问非法。
-SFENCE.VMA 在较早访存确认后退休、清空原教学 TLB 和 Sv32 TLB，并串行化后续取指；
-所有地址/ASID 选择均保守执行全量清空，不写 GPR，不实现远端 hart 操作。
+SFENCE.VMA 在较早访存确认后退休，并串行化后续取指；不写 GPR，不实现远端 hart 操作。
+Sv32 TLB 按 rs1/rs2 选择地址/ASID 失效：rs1=x0 表示所有地址，rs2=x0 表示所有 ASID（含 global）；
+rs2 非 x0 时只失效该 ASID 的非 global 项。非 x0 寄存器值为零仍选择 VA=0 / ASID=0。
+原教学 TLB 没有 ASID，继续保守全刷；两套可配置组相联组织及超级页策略见 [TLB 组织](TLB_ORGANIZATION.md)。
 
 共享 RAM 的多周期核心支持 Sv32 两级 RAM 页表、4KiB/4MiB 页、SUM/MXR/MPRV、ASID/global 和 Svade 缺 A/D 页故障。
 页表读取实际经过数据 Cache/TLM/DIMM，隐式访问受 S-mode PMP 检查；最终物理访问也不能绕过 PMP。
-32 位物理平台拒绝不可达的 34 位 PPN，不截断为低地址。写 satp 不隐式 fence；SFENCE 的所有选择保守全刷。
+32 位物理平台拒绝不可达的 34 位 PPN，不截断为低地址。写 satp 不隐式 fence；SFENCE 失效覆盖匹配的整个叶映射。
 Bare 模式仍不提供 S/U 页级隔离；原教学 MMU 保留供旧实验使用，不作为 Sv32 支持证据。
 旧 ROM 流水线未接共享取指/走表，尝试在该配置启用分页会明确报不支持，不静默按物理地址执行。
 委托和返回规则依据 [RISC-V 官方监督态源码](https://github.com/riscv/riscv-isa-manual/blob/main/src/priv/supervisor.adoc)
@@ -271,7 +277,7 @@ CSRRW[I] 的 rd=x0 时不读 CSR；CSRRS/CSRRC 的 rs1=x0、CSRRSI/CSRRCI 的 ui
 检查权限、读旧值、写新值和 GPR 写回作为同一条指令的提交动作，失败不部分写回。
 规则见 [RISC-V Zicsr 规范](https://docs.riscv.org/reference/isa/unpriv/zicsr.html)。
 
-misa 为固定 WARL 值 `0x40140100`，表示 RV32、I、S、U，写入不改变 ISA；
+misa 为固定 WARL 值 `0x40141100`，表示 RV32、I、M、S、U，写入不改变 ISA；
 mvendorid/marchid/mimpid/mhartid/mconfigptr 均读为 0，身份 CSR 的写入非法。
 这些值仅描述当前单核教学实现，不表示已经过架构认证。
 

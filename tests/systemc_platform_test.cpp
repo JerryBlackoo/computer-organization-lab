@@ -95,6 +95,9 @@ static std::uint32_t narrow_load(unsigned funct3, unsigned rd, unsigned base, un
 static std::uint32_t narrow_store(unsigned funct3, unsigned source, unsigned base, unsigned offset) {
     return ((offset >> 5) << 25) | (source << 20) | (base << 15) | (funct3 << 12) | ((offset & 31) << 7) | 0x23;
 }
+static std::uint32_t muldiv(unsigned funct3, unsigned rd, unsigned rs1, unsigned rs2) {
+    return (1u << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x33u;
+}
 
 struct TrapFixture {
     examples::guest::Image image;
@@ -134,7 +137,7 @@ int sc_main(int argc, char** argv) {
         const std::string scenario = argc > 1 ? argv[1] : "nvme";
         const bool machine_trap = scenario.compare(0, 5, "trap_") == 0;
         std::optional<TrapFixture> expected_trap;
-        auto image = scenario == "nvme" ? examples::guest::nvme_read().relocated(0x8000)
+        auto image = (scenario == "nvme" || scenario == "timed_nvme") ? examples::guest::nvme_read().relocated(0x8000)
             : scenario == "hdd" ? examples::guest::hdd_read(examples::guest::IoMode::DmaInterrupt).relocated(0x8000)
             : counter_image();
         if (scenario == "coherence") {
@@ -161,6 +164,15 @@ int sc_main(int argc, char** argv) {
             image.instructions = {0xfff00093, 0x0010d113, 0x001111b3, 0x41f1d213, 0xfff24313,
                                   0x0ff17393, 0x0033e433, 0x06802023, 0x00000063};
             image.constants.clear();
+        }
+        if (scenario == "muldiv") {
+            examples::guest::Assembler a;
+            a.li(1, 0x80000000); a.li(2, 0xffffffff);
+            for (unsigned funct3 = 0; funct3 < 8; ++funct3) a.emit(muldiv(funct3, 3 + funct3, 1, 2));
+            for (unsigned funct3 = 4; funct3 < 8; ++funct3) a.emit(muldiv(funct3, 7 + funct3, 1, 0));
+            a.li(15, 0x4d455854); a.sw(15, 0, 0x60);
+            a.label("done"); a.beq(0, 0, "done");
+            image = a.finish().relocated(0x8000);
         }
         if (scenario == "fence_i") {
             examples::guest::Assembler a;
@@ -208,6 +220,10 @@ int sc_main(int argc, char** argv) {
             image.entry_point = static_cast<std::uint32_t>(SoCConfig{}.memory.capacity_bytes() - 4); image.instructions = {0x00100093}; image.constants.clear();
         }
         SoCConfig config; config.disk.spin_up_ms = 1;
+        if (scenario == "timed_memory" || scenario == "timed_nvme") {
+            config.enable_timed_dram = true;
+            config.instruction_cache_hit_cycles = 2; config.data_cache_hit_cycles = 2;
+        }
         sc::BootImage boot{image.entry_point, image.instructions, image.constants};
         if (scenario == "elf") {
             auto elf = simulation::boot::parse_elf32(elf_fixture(), config.memory.capacity_bytes());
@@ -387,6 +403,28 @@ int sc_main(int argc, char** argv) {
                 }
             }
             require(updated, "external halfword write discarded the cached line");
+        } else if (scenario == "timed_nvme") {
+            until(machine, [&] { return machine.cpu().pc() == image.done_pc; }, 300000);
+            require(machine.nvme().completed_commands() == 3 && machine.memory().read(0x5000, 512) == pattern() &&
+                    machine.cpu().registers().read(28) == common::load32(pattern()) &&
+                    machine.dram_timing().statistics().reads > 0 && machine.dram_timing().statistics().writes > 0,
+                    "timed DRAM lost CPU/NVMe DMA traffic");
+        } else if (scenario == "timed_memory") {
+            until(machine, [&] { return machine.cpu().completed_instructions() >= 2; });
+            require(machine.cpu().registers().read(1) == 1 && common::load32(machine.memory().read(0x60, 4)) == 1 &&
+                    machine.dram_timing().statistics().activations > 0 && machine.dram_timing().statistics().reads > 0 &&
+                    machine.dram_timing().statistics().writes > 0 &&
+                    machine.instruction_cache().hit_cycles() == 2 && machine.data_cache().hit_cycles() == 2,
+                    "clocked DRAM / two-beat cache did not complete the CPU program");
+        } else if (scenario == "muldiv") {
+            until(machine, [&] { return common::load32(machine.memory().read(0x60, 4)) == 0x4d455854; });
+            const std::uint32_t expected[]{0x80000000, 0, 0x80000000, 0x7fffffff,
+                                           0x80000000, 0, 0, 0x80000000,
+                                           0xffffffff, 0xffffffff, 0x80000000, 0x80000000};
+            for (unsigned i = 0; i < 12; ++i)
+                require(machine.cpu().registers().read(3 + i) == expected[i], "SystemC RV32M result differed");
+            require(machine.cpu().interrupts().read(0x301) == 0x40141100 && !machine.cpu().interrupts().exceptions(),
+                    "SystemC RV32M misa or exception state differed");
         } else if (scenario == "integer") {
             until(machine, [&] { return common::load32(machine.memory().read(0x60, 4)) == 0x800000ff; });
             require(machine.cpu().registers().read(4) == 0xffffffff && machine.cpu().registers().read(6) == 0,

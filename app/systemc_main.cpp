@@ -121,7 +121,7 @@ static void interactive(sc::Platform& machine) {
                 std::string length; input >> length;
                 const auto address = number(argument), count = length.empty() ? 32 : number(length);
                 if (count > 1024) throw std::invalid_argument("memory view is limited to 1024 bytes");
-                const auto bytes = machine.memory().read(address, count);
+                const auto bytes = machine.memory().inspect(address, count);
                 for (std::size_t i = 0; i < bytes.size(); ++i) {
                     if (i % 16 == 0) std::cout << "0x" << std::hex << address + i << ": ";
                     std::cout << std::setfill('0') << std::setw(2) << unsigned(bytes[i]) << (i % 16 == 15 ? '\n' : ' ');
@@ -170,13 +170,21 @@ int sc_main(int argc, char** argv) {
     try {
         std::string demo = "nvme", binary, elf_path, trace_path;
         std::uint32_t entry = 0x8000, limit = 200000;
-        bool console = false, entry_supplied = false;
+        bool console = false, entry_supplied = false, dram_banks_supplied = false;
+        SoCConfig config; config.disk.spin_up_ms = 1;
         for (int i = 1; i < argc; ++i) {
             const std::string flag = argv[i];
             if (flag == "--interactive") { console = true; continue; }
+            if (flag == "--timed-dram") { config.enable_timed_dram = true; continue; }
+            if (flag == "--interleaved-dram") { config.dram_mode = DramScheduleMode::InterleavedPipeline; continue; }
+            if (flag == "--dram-no-bank-check") { config.interleaved_dram.require_ta_equals_n_times_bus = false; continue; }
             if (flag == "--help") {
                 std::cout << "systemc_machine [--interactive] [--demo nvme|hdd] [--trace VCD-stem]\n"
-                          << "                [--bin RV32.bin --entry 0x8000 | --elf static-RV32.elf] [--cycles 200000]\n";
+                          << "                [--bin RV32.bin --entry 0x8000 | --elf static-RV32.elf] [--cycles 200000]\n"
+                          << "                [--timed-dram] [--dram-trcd N] [--dram-trp N] [--dram-tcas N]\n"
+                          << "                [--interleaved-dram] [--dram-banks N] [--dram-ta N] [--dram-bus N]\n"
+                          << "                [--dram-interleaved-trp N] [--dram-no-bank-check]\n"
+                          << "                [--icache-hit-cycles 1|2] [--dcache-hit-cycles 1|2]\n";
                 return 0;
             }
             if (++i >= argc) throw std::invalid_argument("missing option value");
@@ -186,13 +194,24 @@ int sc_main(int argc, char** argv) {
             else if (flag == "--entry") { entry = number(argv[i]); entry_supplied = true; }
             else if (flag == "--cycles") limit = number(argv[i]);
             else if (flag == "--trace") trace_path = argv[i];
+            else if (flag == "--dram-trcd") config.dram_timing.tRCD = number(argv[i]);
+            else if (flag == "--dram-trp") config.dram_timing.tRP = number(argv[i]);
+            else if (flag == "--dram-tcas") config.dram_timing.tCAS = number(argv[i]);
+            else if (flag == "--dram-ta") config.interleaved_dram.ta = number(argv[i]);
+            else if (flag == "--dram-bus") config.interleaved_dram.t_bus = number(argv[i]);
+            else if (flag == "--dram-interleaved-trp") config.interleaved_dram.tRP = number(argv[i]);
+            else if (flag == "--dram-banks") { config.memory.rank.dram_chip.banks = number(argv[i]); dram_banks_supplied = true; }
+            else if (flag == "--icache-hit-cycles") config.instruction_cache_hit_cycles = number(argv[i]);
+            else if (flag == "--dcache-hit-cycles") config.data_cache_hit_cycles = number(argv[i]);
             else throw std::invalid_argument("unknown option " + flag);
         }
+        if (config.dram_mode == DramScheduleMode::InterleavedPipeline && !dram_banks_supplied)
+            config.memory.rank.dram_chip.banks = 4;
+        (void)config.selected_dram_mode();
         if (demo != "nvme" && demo != "hdd") throw std::invalid_argument("demo must be nvme or hdd");
         if (!binary.empty() && !elf_path.empty()) throw std::invalid_argument("choose either --bin or --elf");
         if (!elf_path.empty() && entry_supplied) throw std::invalid_argument("ELF supplies its own entry; omit --entry");
         const bool custom_image = !binary.empty() || !elf_path.empty();
-        SoCConfig config; config.disk.spin_up_ms = 1;
         sc::BootImage boot;
         if (!binary.empty()) boot = load_binary(binary, entry, config.memory.capacity_bytes());
         else if (!elf_path.empty()) boot = load_elf(elf_path, config.memory.capacity_bytes());
@@ -225,15 +244,15 @@ int sc_main(int argc, char** argv) {
         if (console) { interactive(machine); return 0; }
         machine.power_on();
         while (machine.cycles.read() < limit && machine.fault().empty()) {
-            if (!custom_image && common::load32(machine.memory().read(0x10, 4)) == 1) break;
+            if (!custom_image && common::load32(machine.memory().inspect(0x10, 4)) == 1) break;
             machine.step();
             flush_uart(machine);
         }
         status(machine);
         if (!machine.fault().empty()) return 1;
         if (!custom_image) {
-            if (common::load32(machine.memory().read(0x10, 4)) != 1 ||
-                machine.memory().read(demo == "nvme" ? 0x5000 : 0x800, 512) != expected)
+            if (common::load32(machine.memory().inspect(0x10, 4)) != 1 ||
+                machine.memory().inspect(demo == "nvme" ? 0x5000 : 0x800, 512) != expected)
                 throw std::runtime_error("guest I/O incomplete or data differs");
             std::cout << "PASS: real RV32 guest + instruction/data Cache + TLM fabric + DMA + DIMM"
                       << (demo == "hdd" ? " + IRQ/ISR/MRET" : " + NVMe queues") << '\n';

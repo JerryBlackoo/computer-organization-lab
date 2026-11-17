@@ -57,6 +57,21 @@ with tempfile.TemporaryDirectory(prefix='systemc-numeric-cli-', dir=temp_dir) as
         expect(f'cycles accepts uint32 max {value}', code == 0, output)
         code, output = run([*base, '--entry', value, '--cycles', '0'])
         expect(f'entry parses uint32 max {value}', code == 1 and 'boot text is outside DIMM' in output, output)
+    for flag in ('--dram-trcd', '--dram-trp', '--dram-tcas'):
+        code, output = run([*base, '--timed-dram', flag, '0', '--cycles', '0'])
+        expect(f'{flag} rejects zero', code == 1 and 'DRAM timings must be positive' in output, output)
+    for flag in ('--dram-ta', '--dram-bus'):
+        code, output = run([*base, '--interleaved-dram', flag, '0', '--cycles', '0'])
+        expect(f'{flag} rejects zero', code == 1 and 'access time must be positive' in output, output)
+    code, output = run([*base, '--interleaved-dram', '--dram-ta', '3', '--cycles', '0'])
+    expect('interleaved rejects incompatible bank count', code == 1 and 'ta must equal banks' in output, output)
+    code, output = run([*base, '--interleaved-dram', '--dram-ta', '3', '--dram-no-bank-check', '--cycles', '8'])
+    expect('interleaved supports explicit nonideal timing', code == 0 and 'cycles=8' in output, output)
+    code, output = run([*base, '--interleaved-dram', '--timed-dram', '--cycles', '0'])
+    expect('DRAM modes are mutually exclusive', code == 1 and 'mutually exclusive' in output, output)
+    for flag in ('--icache-hit-cycles', '--dcache-hit-cycles'):
+        code, output = run([*base, flag, '3', '--cycles', '0'])
+        expect(f'{flag} rejects 3', code == 1 and 'cache hit must take 1 or 2 cycles' in output, output)
 
 if failures:
     print(f'FAIL numeric CLI: {len(failures)} cases failed: {", ".join(failures)}')

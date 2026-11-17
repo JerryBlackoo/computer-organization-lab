@@ -28,6 +28,8 @@ int sc_main(int, char**) {
         };
         machine.power_on(); prepare();
         until([&] { return machine.cpu().sv32().busy() && machine.cpu().sv32().statistics().reads == 1; });
+        require(machine.walk_busy.read() && machine.walk_pending.read() && machine.walk_level.read() == 1 &&
+            machine.walk_pte_address.read() == 0x1400, "root walk observation did not match real PTE request");
         machine.pause(); const auto pc = machine.cpu().pc(); const auto cycles = machine.cycles.read();
         // Pause gates all architectural phases, not the free-running clock signal.
         sc_core::sc_start(sc_core::sc_time(1, sc_core::SC_MS));
@@ -36,7 +38,14 @@ int sc_main(int, char**) {
         require(machine.cpu().interrupts().read(0x180) == 0 && !machine.cpu().sv32().busy() &&
             machine.cpu().sv32().statistics().reads == 0 && machine.cpu().completed_instructions() == 0 &&
             machine.cpu().registers().read(10) == 0, "reset retained old walker/CPU state");
-        prepare(); until([&] { return machine.cpu().waiting(); });
+        prepare();
+        bool saw_root = false, saw_leaf = false;
+        for (unsigned i = 0; i < 1000 && !machine.cpu().waiting(); ++i) {
+            machine.step();
+            saw_root |= machine.walk_busy.read() && machine.walk_level.read() == 1 && machine.walk_pte_address.read() == 0x1400;
+            saw_leaf |= machine.walk_busy.read() && machine.walk_level.read() == 0 && machine.walk_pte_address.read() == 0x2024;
+        }
+        require(saw_root && saw_leaf && machine.cpu().waiting(), "VCD walk signals did not show both page-table levels");
         require(machine.cpu().registers().read(10) == 73 && machine.cpu().completed_instructions() == 3 &&
             !machine.cpu().interrupts().exceptions(), "new epoch consumed stale response or failed translated fetch");
         // Repeat with power-off while a fresh walk is in flight; long clock time cannot revive it.

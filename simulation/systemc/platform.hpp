@@ -40,6 +40,14 @@ public:
     sc_core::sc_signal<std::uint32_t> privilege{"privilege"};
     sc_core::sc_signal<bool> cpu_waiting{"cpu_waiting"}, mtip{"mtip"}, msip{"msip"};
     sc_core::sc_signal<std::uint64_t> mtime{"mtime"}, mtimecmp{"mtimecmp"}, wfi_wait_cycles{"wfi_wait_cycles"};
+    sc_core::sc_signal<bool> mdu_busy{"mdu_busy"}, mdu_done{"mdu_done"}, mdu_alu_used{"mdu_alu_used"}, walk_busy{"walk_busy"};
+    sc_core::sc_signal<bool> walk_pending{"walk_pending"}, walk_discarded{"walk_discarded"};
+    sc_core::sc_signal<std::uint32_t> walk_level{"walk_level"};
+    sc_core::sc_signal<std::uint64_t> walk_pte_address{"walk_pte_address"};
+    sc_core::sc_signal<std::uint32_t> mdu_iteration{"mdu_iteration"}, mdu_q{"mdu_q"}, mdu_alu_a{"mdu_alu_a"},
+        mdu_alu_b{"mdu_alu_b"}, mdu_alu_result{"mdu_alu_result"}, mdu_alu_control{"mdu_alu_control"};
+    sc_core::sc_signal<std::uint64_t> mdu_partial{"mdu_partial"};
+    sc_core::sc_signal<std::uint32_t> dram_phase{"dram_phase"}, dram_command{"dram_command"}, dram_address{"dram_address"};
     using HddController = devices::hdd::IOController<devices::HDD>;
 #if SC_VERSION_MAJOR < 3
     SC_HAS_PROCESS(Platform);
@@ -50,15 +58,19 @@ public:
         : sc_core::sc_module(name), image_(std::move(image)), period_(period),
           config_(clock_config(std::move(config), period)),
           clock_("clock", period_, 0.5, period_, true), phases_("clock_control"),
-          dimm_(config_.memory), memory_(dimm_),
+          dimm_(config_.memory), memory_(dimm_), dram_timing_(memory_, config_.dram_timing),
+          interleaved_dram_(config_.selected_dram_mode() == DramScheduleMode::InterleavedPipeline
+              ? std::make_unique<soc::controller::InterleavedDramMemory>(memory_, 0, config_.interleaved_dram) : nullptr),
           instruction_link_("instruction_tlm", config_.memory.capacity_bytes()),
           data_link_("data_tlm", config_.memory.capacity_bytes()),
           hdd_link_("hdd_dma_tlm", config_.memory.capacity_bytes()),
           nvme_link_("nvme_dma_tlm", config_.memory.capacity_bytes()),
           nic_link_("nic_dma_tlm", config_.memory.capacity_bytes()),
           host_link_("debug_tlm", config_.memory.capacity_bytes()),
-          instructions_("instruction_cache", phases_.components, instruction_link_),
-          data_("data_cache", phases_.components, data_link_, config_.data_cache, config_.enable_data_cache),
+          instructions_("instruction_cache", phases_.components, instruction_link_, soc::cache::CpuPort::default_config(),
+                        true, config_.instruction_cache_hit_cycles),
+          data_("data_cache", phases_.components, data_link_, config_.data_cache, config_.enable_data_cache,
+                config_.data_cache_hit_cycles),
           disk_(config_.disk),
           hdd_("hdd", phases_.components, [this] {
               return std::make_unique<HddController>(disk_, hdd_link_, SoC::HddMaster, sources_, 1);
@@ -77,7 +89,7 @@ public:
           }),
           clint_("clint", phases_.components),
           interrupts_("interrupt_controller", phases_.interrupts, sources_),
-          cpu_("cpu", phases_.cpu, instructions_, data_, image_.entry, faults),
+          cpu_("cpu", phases_.cpu, instructions_, data_, image_.entry, faults, config_.tlb),
           ram_target_("dram", memory_, sc_core::SC_ZERO_TIME),
           hdd_target_("hdd_registers", hdd_, SoC::HddBase),
           nvme_target_("nvme_registers", nvme_, SoC::NvmeBase),
@@ -86,13 +98,16 @@ public:
           timer_target_("timer_registers", timer_, TimerBase),
           uart_target_("uart_registers", uart_, UartBase),
           clint_target_("clint_registers", clint_, ClintBase),
-          fabric_("pcie", phases_.bus, iommu_, config_.fabric) {
+          fabric_("pcie", phases_.bus, iommu_, config_.fabric,
+                  config_.selected_dram_mode() == DramScheduleMode::LegacySingleIssue ? &dram_timing_ : nullptr,
+                  interleaved_dram_.get()) {
         phases_.clk(clock_);
         cpu_.irq(interrupts_.pending);
         cpu_.timer_irq(clint_.timer_irq); cpu_.software_irq(clint_.software_irq);
         for (auto* port : ports()) port->socket.bind(fabric_.upstream);
         fabric_.downstream.bind(ram_target_.socket);
-        fabric_.map(0, config_.memory.capacity_bytes(), 2, true);
+        fabric_.map(0, config_.memory.capacity_bytes(), 2, true,
+                    config_.selected_dram_mode() == DramScheduleMode::Off ? 0 : config_.memory.word_bits() / 8);
         fabric_.downstream.bind(hdd_target_.socket); fabric_.map(SoC::HddBase, 0x100, 1, false);
         fabric_.downstream.bind(nvme_target_.socket); fabric_.map(SoC::NvmeBase, 0x2000, 1, false);
         fabric_.downstream.bind(nic_target_.socket); fabric_.map(SoC::NicBase, 0x100, 1, false);
@@ -159,6 +174,8 @@ public:
     const soc::cache::CpuPort& instruction_cache() const { return instructions_.hardware(); }
     const soc::cache::CpuPort& data_cache() const { return data_.hardware(); }
     const Interconnect& bus() const { return fabric_.hardware(); }
+    const soc::controller::DramTiming& dram_timing() const { return dram_timing_; }
+    const soc::controller::InterleavedDramMemory* interleaved_dram() const { return interleaved_dram_.get(); }
     QueuedTlmPort& debug_port() { return host_link_; }
 
     void trace(sc_core::sc_trace_file* file) const {
@@ -183,6 +200,15 @@ public:
         sc_core::sc_trace(file, nvme_commands, "nvme_commands"); sc_core::sc_trace(file, hdd_dma_bytes, "hdd_dma_bytes");
         sc_core::sc_trace(file, timer_count, "timer_count"); sc_core::sc_trace(file, timer_pending, "timer_pending");
         sc_core::sc_trace(file, uart_rx_ready, "uart_rx_ready"); sc_core::sc_trace(file, uart_tx_ready, "uart_tx_ready");
+        sc_core::sc_trace(file, mdu_busy, "mdu_busy"); sc_core::sc_trace(file, mdu_done, "mdu_done");
+        sc_core::sc_trace(file, mdu_iteration, "mdu_iteration"); sc_core::sc_trace(file, mdu_partial, "mdu_partial");
+        sc_core::sc_trace(file, mdu_q, "mdu_q"); sc_core::sc_trace(file, mdu_alu_used, "mdu_alu_used");
+        sc_core::sc_trace(file, mdu_alu_control, "mdu_alu_control"); sc_core::sc_trace(file, mdu_alu_a, "mdu_alu_a");
+        sc_core::sc_trace(file, mdu_alu_b, "mdu_alu_b"); sc_core::sc_trace(file, mdu_alu_result, "mdu_alu_result");
+        sc_core::sc_trace(file, walk_busy, "walk_busy"); sc_core::sc_trace(file, dram_phase, "dram_phase");
+        sc_core::sc_trace(file, walk_pending, "walk_pending"); sc_core::sc_trace(file, walk_discarded, "walk_discarded");
+        sc_core::sc_trace(file, walk_level, "walk_level"); sc_core::sc_trace(file, walk_pte_address, "walk_pte_address");
+        sc_core::sc_trace(file, dram_command, "dram_command"); sc_core::sc_trace(file, dram_address, "dram_address");
     }
 private:
     static SoCConfig clock_config(SoCConfig config, sc_core::sc_time period) {
@@ -229,7 +255,8 @@ private:
         }
     }
     void reset_models() {
-        fabric_.reset();
+        fabric_.reset(); dram_timing_.reset();
+        if (interleaved_dram_) interleaved_dram_->reset();
         for (auto* port : ports()) port->reset();
         instructions_.reset(); data_.reset();
         disk_.power_off();
@@ -263,6 +290,19 @@ private:
         satp.write(cpu().interrupts().read(0x180));
         page_walks.write(cpu().sv32().statistics().walks); page_table_reads.write(cpu().sv32().statistics().reads);
         page_faults.write(cpu().sv32().statistics().page_faults);
+        const auto walk = cpu().sv32().walk_status();
+        walk_busy.write(walk.busy); walk_pending.write(walk.pending); walk_discarded.write(walk.discarded);
+        walk_level.write(walk.level); walk_pte_address.write(walk.pte_address);
+        const auto& md = cpu().state().muldiv;
+        mdu_busy.write(md.busy()); mdu_done.write(md.done()); mdu_iteration.write(md.iteration());
+        mdu_partial.write(md.partial()); mdu_q.write(md.q());
+        const bool md_beat = cpu().last_cycle() && cpu().last_cycle()->muldiv.has_value();
+        mdu_alu_used.write(md_beat && md.alu_used());
+        mdu_alu_control.write(static_cast<std::uint32_t>(md.alu_control()));
+        mdu_alu_a.write(md.alu_a()); mdu_alu_b.write(md.alu_b()); mdu_alu_result.write(md.alu_result());
+        dram_phase.write(static_cast<std::uint32_t>(dram_timing_.phase()));
+        dram_command.write(static_cast<std::uint32_t>(dram_timing_.last_tick().command));
+        dram_address.write(dram_timing_.last_tick().address);
         cpu_waiting.write(cpu().waiting()); wfi_wait_cycles.write(cpu().wfi_wait_cycles());
         mtime.write(clint().time()); mtimecmp.write(clint().compare());
         mtip.write(clint().timer_pending()); msip.write(clint().software_pending());
@@ -289,6 +329,8 @@ private:
     PhaseClock phases_;
     dimm::DIMM dimm_;
     soc::controller::Memory memory_;
+    soc::controller::DramTiming dram_timing_;
+    std::unique_ptr<soc::controller::InterleavedDramMemory> interleaved_dram_;
     soc::controller::IOMMU iommu_;
     IrqLatch sources_;
     QueuedTlmPort instruction_link_, data_link_, hdd_link_, nvme_link_, nic_link_, host_link_;

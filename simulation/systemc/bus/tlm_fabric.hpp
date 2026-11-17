@@ -2,6 +2,8 @@
 
 #include "../adapters/queued_tlm_port.hpp"
 #include "../../../interconnect/interconnect.hpp"
+#include "../../../soc/controller/memory/dram_timing.hpp"
+#include "../../../soc/controller/memory/interleaved_dram_memory.hpp"
 #include <tlm_utils/multi_passthrough_initiator_socket.h>
 #include <tlm_utils/multi_passthrough_target_socket.h>
 
@@ -17,15 +19,18 @@ public:
     SC_HAS_PROCESS(TlmFabric);
 #endif
     TlmFabric(sc_core::sc_module_name name, const sc_core::sc_event& clock,
-              soc::controller::IOMMU& iommu, interconnect::pcie::Config config = {})
-        : sc_core::sc_module(name), iommu_(iommu), config_(config), hardware_(new Interconnect(iommu, config)) {
+              soc::controller::IOMMU& iommu, interconnect::pcie::Config config = {},
+              soc::controller::DramTiming* dram = nullptr,
+              soc::controller::InterleavedDramMemory* interleaved = nullptr)
+        : sc_core::sc_module(name), iommu_(iommu), config_(config), hardware_(new Interconnect(iommu, config)), dram_(dram), interleaved_(interleaved) {
+        if (dram_ && interleaved_) throw std::invalid_argument("DRAM schedulers are mutually exclusive");
         upstream.register_b_transport(this, &TlmFabric::transport);
         SC_METHOD(on_clock);
         sensitive << clock;
         dont_initialize();
     }
-    void map(std::uint32_t base, std::uint64_t size, unsigned latency, bool ram) {
-        windows_.push_back({base, size, latency, ram});
+    void map(std::uint32_t base, std::uint64_t size, unsigned latency, bool ram, std::size_t rank_bytes = 0) {
+        windows_.push_back({base, size, latency, ram, rank_bytes});
         attach(windows_.size() - 1);
     }
     void reset() {
@@ -41,14 +46,28 @@ public:
     }
     const Interconnect& hardware() const { return *hardware_; }
 private:
-    struct Window { std::uint32_t base; std::uint64_t size; unsigned latency; bool ram; };
+    struct Window { std::uint32_t base; std::uint64_t size; unsigned latency; bool ram; std::size_t rank_bytes; };
     struct Pending { sc_core::sc_event done; devices::common::BusResult result{}; };
     void attach(std::size_t index) {
         const auto window = windows_.at(index);
         interconnect::pcie::Endpoint endpoint{window.base, window.size, window.latency,
             [this, index](auto address, auto count) { return forward(index, address, devices::common::Bytes(count), false); },
             [this, index](auto address, const auto& data) { forward(index, address, data, true); }, "TLM endpoint"};
-        if (window.ram) hardware_->map_memory_endpoint(std::move(endpoint));
+        if (window.ram && (dram_ || interleaved_)) {
+            endpoint.prepare = [this](auto tag, auto op, auto address, auto bytes) {
+                return interleaved_ ? interleaved_->prepare(tag, op, address, bytes)
+                                    : dram_->prepare(tag, op, address, bytes);
+            };
+            endpoint.release = [this](auto tag, auto address) {
+                if (interleaved_) interleaved_->complete(tag, address);
+                else dram_->complete(tag, address);
+            };
+            endpoint.cancel = [this](auto tag, auto address) {
+                if (interleaved_) interleaved_->cancel(tag, address);
+                else dram_->cancel(tag, address);
+            };
+        }
+        if (window.ram) hardware_->map_memory_endpoint(std::move(endpoint), window.rank_bytes);
         else hardware_->map_mmio_endpoint(std::move(endpoint));
     }
     devices::common::Bytes forward(std::size_t index, std::uint32_t address,
@@ -103,6 +122,8 @@ private:
         }
     }
     void on_clock() {
+        if (dram_) dram_->tick();
+        if (interleaved_) interleaved_->tick();
         hardware_->tick();
         for (auto it = pending_.begin(); it != pending_.end();) {
             if (!hardware_->ready(it->first)) { ++it; continue; }
@@ -115,6 +136,8 @@ private:
     soc::controller::IOMMU& iommu_;
     interconnect::pcie::Config config_;
     std::unique_ptr<Interconnect> hardware_;
+    soc::controller::DramTiming* dram_;
+    soc::controller::InterleavedDramMemory* interleaved_;
     std::vector<Window> windows_;
     std::map<devices::common::Tag, Pending*> pending_;
     sc_core::sc_event advanced_;
