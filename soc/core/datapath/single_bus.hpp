@@ -53,7 +53,9 @@ public:
             step.next_registers.mdr.write(*memory_data);
         }
         if (signals.z_in || signals.fr_in) {
-            step.alu = alu_.evaluate(signals.alu_op, registers.y.read(), bus_value());
+            const auto a = signals.alu_a_from_bus ? bus_value() : registers.y.read();
+            const auto b = signals.alu_op == ALUOperation::Increment ? 0 : bus_value();
+            step.alu = alu_.evaluate(signals.alu_op, a, b);
             if (signals.z_in) step.next_registers.z.write(step.alu->value);
             if (signals.fr_in) step.next_registers.fr.write(step.alu->flags);
         }

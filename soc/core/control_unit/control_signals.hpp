@@ -25,6 +25,8 @@ struct ControlSignals {
     bool increment_pc = false;
     bool decode = false;
     bool halt = false;
+    // Optional experimental bus -> ALU.A bypass; default keeps the original Y input.
+    bool alu_a_from_bus = false;
     ALUOperation alu_op = ALUOperation::Add;
 };
 

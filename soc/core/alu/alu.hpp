@@ -6,7 +6,7 @@
 
 namespace colab::soc::core {
 
-enum class ALUOperation { Add, Subtract };
+enum class ALUOperation { Add, Subtract, Increment };
 
 struct ALUResult {
     std::uint16_t value;
@@ -16,6 +16,7 @@ struct ALUResult {
 class ALU {
 public:
     ALUResult evaluate(ALUOperation operation, std::uint16_t a, std::uint16_t b) const {
+        if (operation == ALUOperation::Increment) return evaluate(ALUOperation::Add, a, 1);
         // 用较宽的无符号数计算，再截取低 16 位，避免宿主 C++ 的有符号溢出。
         const auto wide = operation == ALUOperation::Add
             ? std::uint32_t{a} + b
