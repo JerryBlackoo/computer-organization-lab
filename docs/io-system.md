@@ -6,7 +6,7 @@
 bash tests/run_io.sh
 ```
 
-脚本编译六个 I/O 测试和 `examples/io_modes.cpp`，使用 C++17、`-Wall -Wextra -Wpedantic -Werror`。
+脚本编译 I/O 测试和 `examples/io_modes.cpp`，使用 C++17、`-Wall -Wextra -Wpedantic -Werror`。
 示例的四次运行均由模拟 RV32 CPU 执行 Guest 机器码，读取同一磁盘扇区到系统 DIMM。
 查询与 PIO 中断各搬运 128 个数据字；DMA 查询与 DMA 中断各通过设备主设备事务传输 512 字节。
 四份结果逐字节比较。PIO 中断产生 128 次服务，DMA 中断产生一次完成服务。
@@ -16,7 +16,7 @@ bash tests/run_io.sh
 
 | 计划阶段 | 当前实现 | 可执行验证 |
 |---|---|---|
-| 1. CPU → MMIO | 现有 `RV32Core` 的 LW/SW → CPU MMU → 共享互连 → BAR 地址译码 → 寄存器 | `io_polling_test` 的 Busy/Ready、过早 DATA 访问；`io_fault_test` 的非法宽度与地址 |
+| 1. CPU → MMIO | 现有 `RV32Core` 的 LW/SW → CPU MMU → 共享互连按物理地址选设备 → 寄存器 | `io_polling_test` 的 Busy/Ready、过早 DATA 访问；`io_fault_test` 的非法宽度与地址 |
 | 2. 程序查询 | 机械 HDD 外接教学寄存器控制器；命令接收后按 tick 推进，DATA 握手传一个字 | Guest 轮询并 LW DATA / SW DIMM，完整数据比较；另验证 PIO 写盘 |
 | 3. 中断 | 设备 IRQ → SoC 屏蔽/判优/claim → CPU MEIP → 指令边界进入 Trap → Guest ISR → MRET | `io_interrupt_test` 验证 128 次中断、GPR/栈恢复和继续执行；`io_fault_test` 验证延迟 Load 中不得提前响应 |
 | 4. DMA | 描述符、方向、地址/长度计数器、一个在途事务、返回确认、背压、错误 | `io_dma_test` 验证无 Guest 数据复制循环、双向 DMA、非整字尾部、IOMMU、禁止 DMA 访问 MMIO |
@@ -31,9 +31,13 @@ bash tests/run_io.sh
 flowchart LR
     CPU[RV32 CPU LW/SW] --> MMU[CPU MMU]
     MMU --> CACHE[CPU 数据 Cache]
-    CACHE --> BUS[共享事务互连 / PCIe Root Complex]
+    CACHE --> BUS[共享事务互连]
     MMU -->|MMIO 绕过缓存| BUS
-    BUS --> REG[设备控制/状态/DATA 寄存器]
+    BUS --> ROOT[PCIe 根复合体模型]
+    ROOT -->|Memory Read / Write| BAR[设备端 BAR 译码]
+    BAR --> REG[HDD 控制/状态/DATA 寄存器]
+    BAR --> NVME
+    BAR --> NIC
     REG --> HDD[HDD 机械与磁介质]
     HDD --> BUF[设备本地扇区缓冲]
     BUF --> DMA[设备 DMA Engine]
@@ -69,7 +73,7 @@ NVMe 的 SQ/CQ、数据缓冲和 NIC 的 TX/RX 缓冲都位于同一份 DIMM。
 4. 采样 SoC 中断线，CPU 执行一拍；缓存命中可直接返回，下级事务只排队。
 
 主设备从不自行 tick 总线，也不在 DMA 内部运行 CPU。请求最早下一系统 tick 才能获得服务。
-复用 `interconnect/pcie/Fabric` 已有的按 master 轮转、每 master FIFO、tag、准备延迟和分离事务。
+共享互连的 `Fabric` 位于 `interconnect/fabric.hpp`，实现按 master 轮转、每 master FIFO、tag、准备延迟和分离事务。
 默认主存准备延迟为两拍；流水线等待返回时保持 MEM 及上游，WB 可排空，
 同一请求不会重复读取有副作用的 DATA。多周期执行继续保持原访存微状态。
 CPU 算术指令可以在 DMA 请求等待期间正常推进。当前没有实现三种主存共享策略的运行时切换。
@@ -86,6 +90,23 @@ CPU 算术指令可以在 DMA 请求等待期间正常推进。当前没有实�
 HDD 的 `tick_ms` 只是机械时间与教学时钟的比例参数，不是总线或 CPU 的真实频率。
 
 ## 地址与协议
+
+两种整机模型共用 [板级 MMIO 地址表](../soc/address_map.hpp)。`SoC` 和 SystemC `Platform` 在构造时按表登记目标。
+运行时，`interconnect/fabric.hpp` 中的 `Fabric::decode_address()` 按物理地址选中 RAM 或设备窗口。
+RAM 请求交给内存控制器。HDD、NVMe 和 NIC 的 MMIO 窗口接到 PCIe 根复合体模型；片上外设仍直接接在互连上。
+
+例如 RV32 执行 `sw x6, 12(x5)`，其中 `x5 = 0x10000000`，`x6 = 7`。
+在裸地址模式下，互连根据 `0x1000000C` 选中 HDD 的 PCIe 窗口。根复合体将请求转换为
+`MemoryWrite{0x1000000C, 7}`，HDD 设备端的 `BarEndpoint` 检查完整的四字节访问是否落在自己的 BAR 内，
+减去 BAR 基地址得到 `0x0C`。HDD 控制器的 `case Lba` 选中 LBA 寄存器并写入 `7`。
+
+此模型支持对齐的单 DWORD Memory Read 和 Memory Write。BAR 由板级地址表静态配置；
+事务用 C++ 对象传递，省略二进制 TLP 编码、配置空间枚举和物理链路。模拟总线照常向发起者返回事务结果。
+`pcie_mmio_test` 运行上述 RV32 指令并读回 LBA，同时验证越过 BAR 的请求不影响寄存器。
+
+**共享事务互连与 NoC：** 本项目的 `Fabric` 是模拟地址路由、仲裁和事务定时的共享互连，
+并未实现 NoC 的路由器、网络拓扑和链路，不能仅因它连接片上部件就称为 NoC。
+CPU 内部寄存器与 ALU 之间的数据通路属于另一层；CPU 发出的系统访存请求才进入这里的互连。
 
 | 物理窗口 | 用途 |
 |---|---|
@@ -130,7 +151,7 @@ CLAIM 读取选定来源并标记在服务；先确认设备，再写 COMPLETE�
 
 RV32 支持六种 Zicsr、MRET、WFI、FENCE/FENCE.I，流水线和两种多周期控制器均可执行。
 流水线在 WB 串行提交 CSR/MRET；中断冲刷未提交指令，已发出的访存先完成并退休，
-再保存下一条架构 PC。更年轻的错误路径 MMIO 不会发出。详见 [流水线说明](../soc/core/pipeline/README.md)。
+再保存下一条架构 PC。更年轻的错误路径 MMIO 不会发出。详见 [流水线说明](../soc/rv32/pipeline/README.md)。
 实现 M/U 模式下 `mstatus`、`mie`、`mtvec`、`mscratch`、`mepc`、`mcause`、`mtval`、`mip` 和 16 项 PMP 子集。
 机器外部中断 cause=11；支持 mtvec Direct/Vectored，进入时清 MIE、保留 MPIE、保存下一指令 PC；
 MRET 恢复 PC、MIE 与 MPP 指定的 M/U 模式；返回后 MPP 置 U。没有 S-mode 或异常委托。

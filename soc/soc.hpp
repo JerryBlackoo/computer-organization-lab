@@ -1,5 +1,6 @@
 #pragma once
 
+#include "address_map.hpp"
 #include "core/core.hpp"
 #include "core/rv32_core.hpp"
 #include "noc/noc.hpp"
@@ -18,7 +19,7 @@ enum class DramScheduleMode { Off, LegacySingleIssue, InterleavedPipeline };
 struct SoCConfig {
     dimm::DIMMGeometry memory{4, {4, {2, {64, 128, 8}}}}; // 4 x 64 KiB = 256 KiB, 32-bit ranks.
     devices::hdd::Config disk{};
-    interconnect::pcie::Config fabric{};
+    interconnect::fabric::Config fabric{};
     soc::RV32Core::Mode cpu_mode = soc::RV32Core::Mode::Hardwired;
     soc::RV32Core::Execution cpu_execution = soc::RV32Core::Execution::Pipelined;
     soc::core::pipeline::Options pipeline{};
@@ -43,13 +44,13 @@ struct SoCConfig {
     }
 };
 
-// CPU data: MMU -> write-through Cache -> shared bus -> Memory -> DIMM.
+// Assemble CPU and devices on a shared interconnect that routes to RAM or MMIO.
 // MMIO bypasses Cache; committed RAM writes snoop/update CPU cached copies.
 // Instruction ROM remains Harvard-style, as in the existing RV32 core.
 class SoC {
 public:
-    static constexpr std::uint32_t HddBase = 0x10000000, IrqBase = 0x10001000,
-        NvmeBase = 0x20000000, NicBase = 0x30000000;
+    static constexpr std::uint32_t HddBase = soc::address_map::Hdd.base, IrqBase = soc::address_map::Irq.base,
+        NvmeBase = soc::address_map::Nvme.base, NicBase = soc::address_map::Nic.base;
     static constexpr unsigned HddMaster = 1, NvmeMaster = 2, NicMaster = 3;
     explicit SoC(std::vector<std::uint32_t> program = {0x00000063}, SoCConfig config = {})
         : dimm_(config.memory), memory_(dimm_), dram_timing_(memory_, config.dram_timing),
@@ -57,13 +58,13 @@ public:
           interleaved_dram_(dram_mode_ == DramScheduleMode::InterleavedPipeline
               ? std::make_unique<soc::controller::InterleavedDramMemory>(memory_, 0, config.interleaved_dram) : nullptr),
           bus_(iommu_, config.fabric),
-          data_port_(bus_, config.data_cache, config.enable_data_cache, config.data_cache_hit_cycles), pcie_(bus_),
+          data_port_(bus_, config.data_cache, config.enable_data_cache, config.data_cache_hit_cycles),
           disk_(config.disk), hdd_(disk_, bus_, HddMaster, irq_, 1),
           nvme_(bus_, NvmeMaster, irq_, 2), nic_(bus_, NicMaster, irq_, 3),
           cpu_(std::move(program), config.cpu_mode, 256, {}, config.cpu_execution, config.pipeline,
                soc::core::FaultHandling::HostException, soc::RV32Core::Translation::Teaching, config.tlb) {
         if (dram_mode_ != DramScheduleMode::Off) {
-            interconnect::pcie::Endpoint endpoint{0, config.memory.capacity_bytes(), 2,
+            interconnect::fabric::Endpoint endpoint{0, config.memory.capacity_bytes(), 2,
                 [this](auto address, auto bytes) { return memory_.read(address, bytes); },
                 [this](auto address, const auto& bytes) { memory_.write(address, bytes); }, "clocked DIMM"};
             endpoint.prepare = [this](auto tag, auto op, auto address, auto bytes) {
@@ -80,10 +81,11 @@ public:
             };
             bus_.map_memory_endpoint(std::move(endpoint), config.memory.word_bits() / 8);
         } else bus_.map_memory(0, config.memory.capacity_bytes(), memory_);
-        pcie_.attach(HddBase, 0x100, hdd_);
-        pcie_.attach(IrqBase, 0x100, irq_);
-        pcie_.attach(NvmeBase, 0x2000, nvme_);
-        pcie_.attach(NicBase, 0x100, nic_);
+        soc::controller::PcieRootComplex pcie_root(bus_);
+        pcie_root.attach(HddBase, soc::address_map::Hdd.size, hdd_);
+        bus_.map_mmio(IrqBase, soc::address_map::Irq.size, irq_);
+        pcie_root.attach(NvmeBase, soc::address_map::Nvme.size, nvme_);
+        pcie_root.attach(NicBase, soc::address_map::Nic.size, nic_);
         memory_.set_write_observer([this](auto address, const auto& data) { data_port_.snoop_write(address, data); });
         cpu_.connect_bus(data_port_);
     }
@@ -124,7 +126,6 @@ private:
     soc::controller::IOMMU iommu_;
     Interconnect bus_;
     soc::cache::CpuPort data_port_;
-    soc::controller::PCIe pcie_;
     soc::controller::Interrupt irq_;
     devices::HDD disk_;
     devices::hdd::IOController<devices::HDD> hdd_;

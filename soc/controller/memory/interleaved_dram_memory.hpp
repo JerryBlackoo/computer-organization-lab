@@ -28,7 +28,7 @@ public:
     InterleavedDramMemory(InterleavedDramMemory&&) = delete;
     InterleavedDramMemory& operator=(InterleavedDramMemory&&) = delete;
 
-    bool prepare(interconnect::pcie::Tag tag, interconnect::pcie::Operation op,
+    bool prepare(interconnect::fabric::Tag tag, interconnect::fabric::Operation op,
                  Memory::Address address, std::size_t bytes) {
         if (!bytes || bytes - 1 > std::numeric_limits<Memory::Address>::max() - address)
             throw std::invalid_argument("invalid DRAM beat size");
@@ -46,14 +46,14 @@ public:
         if (existing == requests_.end()) requests_.emplace(tag, Request{op, address, bytes});
         return ready;
     }
-    void complete(interconnect::pcie::Tag tag, Memory::Address address) {
+    void complete(interconnect::fabric::Tag tag, Memory::Address address) {
         const auto it = requests_.find(tag);
         if (it == requests_.end() || it->second.address != address)
             throw std::logic_error("unknown DRAM beat completion");
         scheduler_.complete(tag);
         requests_.erase(it);
     }
-    void cancel(interconnect::pcie::Tag tag, Memory::Address address) {
+    void cancel(interconnect::fabric::Tag tag, Memory::Address address) {
         const auto it = requests_.find(tag);
         if (it == requests_.end() || it->second.address != address) return;
         scheduler_.cancel(tag);
@@ -64,7 +64,7 @@ public:
     bool busy() const { return scheduler_.busy(); }
     const Scheduler& scheduler() const { return scheduler_; }
 private:
-    struct Request { interconnect::pcie::Operation op; Memory::Address address; std::size_t bytes; };
+    struct Request { interconnect::fabric::Operation op; Memory::Address address; std::size_t bytes; };
     Memory::Address physical(std::size_t word) const {
         return static_cast<Memory::Address>(std::uint64_t{base_} + std::uint64_t{word} * width_);
     }
@@ -72,6 +72,6 @@ private:
     Memory::Address base_;
     std::size_t width_;
     Scheduler scheduler_;
-    std::map<interconnect::pcie::Tag, Request> requests_;
+    std::map<interconnect::fabric::Tag, Request> requests_;
 };
 } // namespace colab::soc::controller

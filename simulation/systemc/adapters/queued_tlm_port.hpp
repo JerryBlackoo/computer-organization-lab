@@ -12,7 +12,7 @@ namespace colab::simulation::systemc {
 
 struct BusTransaction : tlm::tlm_extension<BusTransaction> {
     devices::common::Master master = 0;
-    devices::common::BusResult result{0, 0, interconnect::pcie::Status::BackendError, {}, 0, "no response", false};
+    devices::common::BusResult result{0, 0, interconnect::fabric::Status::BackendError, {}, 0, "no response", false};
     tlm::tlm_extension_base* clone() const override { return new BusTransaction(*this); }
     void copy_from(const tlm::tlm_extension_base& other) override {
         *this = static_cast<const BusTransaction&>(other);

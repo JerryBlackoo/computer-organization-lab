@@ -140,6 +140,14 @@ int sc_main(int argc, char** argv) {
         auto image = (scenario == "nvme" || scenario == "timed_nvme") ? examples::guest::nvme_read().relocated(0x8000)
             : scenario == "hdd" ? examples::guest::hdd_read(examples::guest::IoMode::DmaInterrupt).relocated(0x8000)
             : counter_image();
+        if (scenario == "pcie_lba") {
+            examples::guest::Assembler a;
+            a.li(5, SoC::HddBase); a.li(6, 7);
+            a.sw(6, 5, sc::Platform::HddController::Lba);
+            a.lw(7, 5, sc::Platform::HddController::Lba);
+            a.label("done"); a.beq(0, 0, "done");
+            image = a.finish().relocated(0x8000);
+        }
         if (scenario == "coherence") {
             examples::guest::Assembler a;
             a.li(1, 0x7000); a.label("done"); a.lw(2, 1, 0); a.sw(2, 0, 0x60); a.beq(0, 0, "done");
@@ -284,6 +292,15 @@ int sc_main(int argc, char** argv) {
             require(machine.fault().find(scenario == "illegal" ? "cause=2" : "cause=1") != std::string::npos,
                     "wrong instruction fault cause");
             require(machine.cpu().completed_instructions() == (scenario == "illegal" ? 0u : 1u), "fault retired an instruction");
+        } else if (scenario == "pcie_lba") {
+            using H = sc::Platform::HddController;
+            const auto ram_writes = machine.memory().statistics().write_requests;
+            until(machine, [&] { return machine.cpu().pc() == image.done_pc; });
+            require(machine.hdd().mmio_read32(H::Lba) == 7 && machine.cpu().registers().read(7) == 7,
+                "guest PCIe LBA write/readback failed");
+            require(machine.hdd().mmio_read32(H::Command) == 0 && machine.hdd().mmio_read32(H::Length) == 0 &&
+                machine.memory().statistics().write_requests == ram_writes && !machine.cpu().interrupts().exceptions(),
+                "PCIe LBA access changed another target or faulted");
         } else if (scenario == "nvme" || scenario == "hdd") {
             until(machine, [&] { return common::load32(machine.memory().read(0x10, 4)) == 1; });
             const auto destination = scenario == "nvme" ? 0x5000 : 0x800;

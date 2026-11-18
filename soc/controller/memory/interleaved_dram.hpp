@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../../../dimm/geometry.hpp"
-#include "../../../interconnect/pcie/pcie.hpp"
+#include "../../../interconnect/fabric.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -28,7 +28,7 @@ public:
     struct Trace {
         std::uint64_t cycle = 0;
         Command command = Command::None;
-        interconnect::pcie::Tag tag = 0;
+        interconnect::fabric::Tag tag = 0;
         dimm::DIMMAddress address{};
     };
     struct Statistics {
@@ -60,9 +60,9 @@ public:
 
     // word_address is DIMM-local, in full Rank words, not physical bytes.
     // Repeated prepare for the same tag is a poll; a tag cannot change identity.
-    bool prepare(interconnect::pcie::Tag tag, interconnect::pcie::Operation op,
+    bool prepare(interconnect::fabric::Tag tag, interconnect::fabric::Operation op,
                  std::size_t word_address) {
-        if (op != interconnect::pcie::Operation::Read && op != interconnect::pcie::Operation::Write)
+        if (op != interconnect::fabric::Operation::Read && op != interconnect::fabric::Operation::Write)
             throw std::invalid_argument("unknown DRAM operation");
         for (const auto& request : requests_) {
             if (request.tag != tag) continue;
@@ -77,7 +77,7 @@ public:
 
     // Completion acknowledges consumption; until then the bank stays reserved,
     // so a later row conflict cannot invalidate an unconsumed ready beat.
-    void complete(interconnect::pcie::Tag tag) {
+    void complete(interconnect::fabric::Tag tag) {
         for (auto it = requests_.begin(); it != requests_.end(); ++it) {
             if (it->tag != tag) continue;
             if (it->phase != Phase::Ready) throw std::logic_error("DRAM beat is not ready");
@@ -87,7 +87,7 @@ public:
         }
         throw std::logic_error("unknown DRAM tag");
     }
-    void cancel(interconnect::pcie::Tag tag) {
+    void cancel(interconnect::fabric::Tag tag) {
         for (auto it = requests_.begin(); it != requests_.end(); ++it) {
             if (it->tag != tag) continue;
             if (it->phase == Phase::InFlight || it->phase == Phase::Ready) {
@@ -160,8 +160,8 @@ public:
 
 private:
     struct Request {
-        interconnect::pcie::Tag tag;
-        interconnect::pcie::Operation op;
+        interconnect::fabric::Tag tag;
+        interconnect::fabric::Operation op;
         std::size_t word_address;
         dimm::DIMMAddress address;
         Phase phase;

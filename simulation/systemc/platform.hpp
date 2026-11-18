@@ -3,6 +3,7 @@
 #include "platform/phase_clock.hpp"
 #include "adapters/clocked_models.hpp"
 #include "adapters/memory_target.hpp"
+#include "adapters/pcie_target.hpp"
 #include "bus/tlm_fabric.hpp"
 #include "../../soc/soc.hpp"
 #include "../../devices/timer/timer.hpp"
@@ -23,9 +24,9 @@ struct BootImage {
 // existing timed fabric/IOMMU -> TLM target -> hardware-model path.
 class Platform : public sc_core::sc_module {
 public:
-    static constexpr std::uint32_t TimerBase = 0x40000000;
-    static constexpr std::uint32_t UartBase = 0x40001000;
-    static constexpr std::uint32_t ClintBase = 0x02000000;
+    static constexpr std::uint32_t TimerBase = soc::address_map::Timer.base;
+    static constexpr std::uint32_t UartBase = soc::address_map::Uart.base;
+    static constexpr std::uint32_t ClintBase = soc::address_map::Clint.base;
     sc_core::sc_signal<std::uint64_t> cycles{"cycles"}, retired{"retired"}, irq_entries{"irq_entries"};
     sc_core::sc_signal<std::uint32_t> pc{"pc"}, bus_master{"bus_master"}, bus_phase{"bus_phase"}, timer_count{"timer_count"};
     sc_core::sc_signal<bool> irq_pending{"irq_pending"}, bus_request{"bus_request"}, bus_ack{"bus_ack"}, timer_pending{"timer_pending"};
@@ -91,30 +92,35 @@ public:
           interrupts_("interrupt_controller", phases_.interrupts, sources_),
           cpu_("cpu", phases_.cpu, instructions_, data_, image_.entry, faults, config_.tlb),
           ram_target_("dram", memory_, sc_core::SC_ZERO_TIME),
-          hdd_target_("hdd_registers", hdd_, SoC::HddBase),
-          nvme_target_("nvme_registers", nvme_, SoC::NvmeBase),
-          nic_target_("nic_registers", nic_, SoC::NicBase),
-          irq_target_("irq_registers", interrupts_.hardware, SoC::IrqBase),
+          hdd_target_("hdd_registers", hdd_, soc::address_map::Hdd.base, soc::address_map::Hdd.size),
+          nvme_target_("nvme_registers", nvme_, soc::address_map::Nvme.base, soc::address_map::Nvme.size),
+          nic_target_("nic_registers", nic_, soc::address_map::Nic.base, soc::address_map::Nic.size),
+          irq_target_("irq_registers", interrupts_.hardware, soc::address_map::Irq.base),
           timer_target_("timer_registers", timer_, TimerBase),
           uart_target_("uart_registers", uart_, UartBase),
           clint_target_("clint_registers", clint_, ClintBase),
-          fabric_("pcie", phases_.bus, iommu_, config_.fabric,
+          fabric_("interconnect", phases_.bus, iommu_, config_.fabric,
                   config_.selected_dram_mode() == DramScheduleMode::LegacySingleIssue ? &dram_timing_ : nullptr,
                   interleaved_dram_.get()) {
         phases_.clk(clock_);
         cpu_.irq(interrupts_.pending);
         cpu_.timer_irq(clint_.timer_irq); cpu_.software_irq(clint_.software_irq);
         for (auto* port : ports()) port->socket.bind(fabric_.upstream);
+        using WindowKind = TlmFabric::WindowKind;
         fabric_.downstream.bind(ram_target_.socket);
-        fabric_.map(0, config_.memory.capacity_bytes(), 2, true,
+        fabric_.map(0, config_.memory.capacity_bytes(), 2, WindowKind::Ram,
                     config_.selected_dram_mode() == DramScheduleMode::Off ? 0 : config_.memory.word_bits() / 8);
-        fabric_.downstream.bind(hdd_target_.socket); fabric_.map(SoC::HddBase, 0x100, 1, false);
-        fabric_.downstream.bind(nvme_target_.socket); fabric_.map(SoC::NvmeBase, 0x2000, 1, false);
-        fabric_.downstream.bind(nic_target_.socket); fabric_.map(SoC::NicBase, 0x100, 1, false);
-        fabric_.downstream.bind(irq_target_.socket); fabric_.map(SoC::IrqBase, 0x100, 1, false);
-        fabric_.downstream.bind(timer_target_.socket); fabric_.map(TimerBase, 0x100, 1, false);
-        fabric_.downstream.bind(uart_target_.socket); fabric_.map(UartBase, 0x100, 1, false);
-        fabric_.downstream.bind(clint_target_.socket); fabric_.map(ClintBase, 0xc000, 1, false);
+        const auto map_device = [this](auto& target, soc::address_map::Window window, WindowKind kind) {
+            fabric_.downstream.bind(target.socket);
+            fabric_.map(window.base, window.size, 1, kind);
+        };
+        map_device(hdd_target_, soc::address_map::Hdd, WindowKind::Pcie);
+        map_device(nvme_target_, soc::address_map::Nvme, WindowKind::Pcie);
+        map_device(nic_target_, soc::address_map::Nic, WindowKind::Pcie);
+        map_device(irq_target_, soc::address_map::Irq, WindowKind::Mmio);
+        map_device(timer_target_, soc::address_map::Timer, WindowKind::Mmio);
+        map_device(uart_target_, soc::address_map::Uart, WindowKind::Mmio);
+        map_device(clint_target_, soc::address_map::Clint, WindowKind::Mmio);
         memory_.set_write_observer([this](auto address, const auto& bytes) {
             instructions_.snoop_write(address, bytes); data_.snoop_write(address, bytes);
         });
@@ -346,7 +352,8 @@ private:
     InterruptModule interrupts_;
     CpuModule cpu_;
     MemoryTarget ram_target_;
-    MmioTarget hdd_target_, nvme_target_, nic_target_, irq_target_, timer_target_, uart_target_, clint_target_;
+    PcieTarget hdd_target_, nvme_target_, nic_target_;
+    MmioTarget irq_target_, timer_target_, uart_target_, clint_target_;
     TlmFabric fabric_;
     sc_core::sc_event refresh_;
 };

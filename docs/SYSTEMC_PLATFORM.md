@@ -63,20 +63,22 @@ flowchart LR
   DEV -->|控制器内的 DMA| PORT
   PORT --> BUS[现有共享 Fabric + IOMMU]
   BUS -->|TLM| MEM[内存控制器 + DIMM]
-  BUS -->|TLM MMIO| DEV
+  BUS -->|TLM + PCIe Memory Read / Write| BAR[设备端 BAR 译码]
+  BAR --> DEV
   DEV --> IRQ[中断控制器]
   IRQ -->|sc_signal| CPU
 ```
 
 正式平台入口为 `simulation/systemc/platform.hpp`。它分别实例化 CPU、指令 Cache、
-数据 Cache、PCIe/Fabric、设备控制器和中断控制器模块，没有调用 `SoC::tick()`。
+数据 Cache、共享片上事务互连、设备控制器和中断控制器模块，没有调用 `SoC::tick()`。
 DIMM 是被内存事务驱动的目标，不需要无意义的每拍轮询进程。
 设备内部 DMA 仍由其控制器推进一次，独立的 TLM initiator 线程负责总线访问。
 
 `QueuedTlmPort` 保留原有 `DmaBus::submit / ready / take` 接口。硬件提交请求后立即返回，
 后台 `SC_THREAD` 发起 `b_transport()` 并等待响应；CPU/设备的时钟回调不会调用 `wait()`。
-`TlmFabric` 复用原有 `Interconnect`、Fabric 的排队/轮转仲裁、IOMMU 和逐拍传输，
-通过 TLM target 调用内存或设备寄存器。不是只给直接内存拷贝套一个 TLM 函数名。
+`TlmFabric` 复用 `Interconnect` 的 IOMMU 和 `Fabric` 的物理地址译码、排队、轮转仲裁及逐拍传输，
+通过 TLM target 调用内存或设备寄存器。对 HDD、NVMe 和 NIC，主机侧通过 `PcieRequest` 扩展把完整地址的
+Memory Read 或 Memory Write 交给 `PcieTarget`，再由设备端匹配 BAR 并译出寄存器偏移。MMIO 窗口取自 [板级地址表](../soc/address_map.hpp)。
 
 CPU 取指同样来自 DIMM。`RV32Core` 新增可选指令总线和启动 PC，原有 ROM 路径保留。
 平台使用共享物理地址空间，程序默认装在 `0x8000`；初始数据/常量、队列和 DMA 缓冲区在低地址。

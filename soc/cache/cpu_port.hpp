@@ -13,7 +13,7 @@ public:
     using Tag = devices::common::Tag;
     using Operation = devices::common::BusOperation;
     using Result = devices::common::BusResult;
-    using Status = interconnect::pcie::Status;
+    using Status = interconnect::fabric::Status;
     struct Statistics {
         std::uint64_t bypasses = 0;
         std::uint64_t snoop_writes = 0;

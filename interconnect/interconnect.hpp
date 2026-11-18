@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pcie/pcie.hpp"
+#include "fabric.hpp"
 #include "../devices/common/mmio_device.hpp"
 #include "../soc/controller/iommu/iommu.hpp"
 #include "../soc/controller/memory/memory.hpp"
@@ -11,15 +11,15 @@ namespace colab {
 class Interconnect final : public devices::common::DmaBus {
 public:
     using Bytes = devices::common::Bytes;
-    explicit Interconnect(soc::controller::IOMMU& iommu, interconnect::pcie::Config config = {})
+    explicit Interconnect(soc::controller::IOMMU& iommu, interconnect::fabric::Config config = {})
         : iommu_(iommu), fabric_(config) {}
     // Adapter endpoints preserve the existing fabric/IOMMU while using TLM ports.
-    void map_memory_endpoint(interconnect::pcie::Endpoint endpoint, std::size_t rank_bytes = 0) {
+    void map_memory_endpoint(interconnect::fabric::Endpoint endpoint, std::size_t rank_bytes = 0) {
         const Range range{endpoint.base, endpoint.size, rank_bytes};
         fabric_.map(std::move(endpoint));
         ram_.push_back(range);
     }
-    void map_mmio_endpoint(interconnect::pcie::Endpoint endpoint) {
+    void map_mmio_endpoint(interconnect::fabric::Endpoint endpoint) {
         const Range range{endpoint.base, endpoint.size};
         fabric_.map(std::move(endpoint));
         mmio_.push_back(range);
@@ -84,7 +84,7 @@ public:
     devices::common::BusResult take(devices::common::Tag tag) override { return fabric_.take(tag); }
     void tick() { fabric_.tick(); }
     bool idle() const { return fabric_.idle(); }
-    const interconnect::pcie::Fabric& fabric() const { return fabric_; }
+    const interconnect::fabric::Fabric& fabric() const { return fabric_; }
     bool is_memory(std::uint32_t address, std::size_t size) const override {
         if (!size) return false;
         for (const auto& range : ram_) {
@@ -96,7 +96,7 @@ public:
 private:
     struct Range { std::uint32_t base; std::uint64_t size; std::size_t rank_bytes = 0; };
     soc::controller::IOMMU& iommu_;
-    interconnect::pcie::Fabric fabric_;
+    interconnect::fabric::Fabric fabric_;
     std::vector<Range> ram_, mmio_;
 };
 }

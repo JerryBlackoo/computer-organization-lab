@@ -1,13 +1,13 @@
 #pragma once
 
 #include "mmio_device.hpp"
-#include "../../interconnect/pcie/pcie.hpp"
+#include "../../interconnect/fabric.hpp"
 
 namespace colab::devices::common {
-using Master = interconnect::pcie::Master;
-using Tag = interconnect::pcie::Tag;
-using BusResult = interconnect::pcie::Result;
-using BusOperation = interconnect::pcie::Operation;
+using Master = interconnect::fabric::Master;
+using Tag = interconnect::fabric::Tag;
+using BusResult = interconnect::fabric::Result;
+using BusOperation = interconnect::fabric::Operation;
 
 class DmaBus {
 public:
@@ -60,7 +60,7 @@ public:
                 std::copy_n(result.data.begin(), count, data_.begin() + transferred_);
             }
             transferred_ += committed;
-            if (result.status != interconnect::pcie::Status::Success || result.transferred_bytes != beat_count_) {
+            if (result.status != interconnect::fabric::Status::Success || result.transferred_bytes != beat_count_) {
                 fail(result.error.empty() ? "short DMA transaction" : result.error); return;
             }
             if (descriptor_.direction == DmaDirection::MemoryToDevice) {

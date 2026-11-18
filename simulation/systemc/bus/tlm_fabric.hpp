@@ -1,9 +1,11 @@
 #pragma once
 
+#include "pcie_request.hpp"
 #include "../adapters/queued_tlm_port.hpp"
-#include "../../../interconnect/interconnect.hpp"
 #include "../../../soc/controller/memory/dram_timing.hpp"
 #include "../../../soc/controller/memory/interleaved_dram_memory.hpp"
+#include "../../../soc/controller/pcie/pcie.hpp"
+#include <optional>
 #include <tlm_utils/multi_passthrough_initiator_socket.h>
 #include <tlm_utils/multi_passthrough_target_socket.h>
 
@@ -13,13 +15,14 @@ namespace colab::simulation::systemc {
 // is reached over TLM; its delay is already modeled by the fabric's phases.
 class TlmFabric : public sc_core::sc_module {
 public:
+    enum class WindowKind { Ram, Mmio, Pcie };
     tlm_utils::multi_passthrough_target_socket<TlmFabric> upstream{"upstream"};
     tlm_utils::multi_passthrough_initiator_socket<TlmFabric> downstream{"downstream"};
 #if SC_VERSION_MAJOR < 3
     SC_HAS_PROCESS(TlmFabric);
 #endif
     TlmFabric(sc_core::sc_module_name name, const sc_core::sc_event& clock,
-              soc::controller::IOMMU& iommu, interconnect::pcie::Config config = {},
+              soc::controller::IOMMU& iommu, interconnect::fabric::Config config = {},
               soc::controller::DramTiming* dram = nullptr,
               soc::controller::InterleavedDramMemory* interleaved = nullptr)
         : sc_core::sc_module(name), iommu_(iommu), config_(config), hardware_(new Interconnect(iommu, config)), dram_(dram), interleaved_(interleaved) {
@@ -29,14 +32,14 @@ public:
         sensitive << clock;
         dont_initialize();
     }
-    void map(std::uint32_t base, std::uint64_t size, unsigned latency, bool ram, std::size_t rank_bytes = 0) {
-        windows_.push_back({base, size, latency, ram, rank_bytes});
+    void map(std::uint32_t base, std::uint64_t size, unsigned latency, WindowKind kind, std::size_t rank_bytes = 0) {
+        windows_.push_back({base, size, latency, kind, rank_bytes});
         attach(windows_.size() - 1);
     }
     void reset() {
         ++generation_;
         for (auto& [tag, pending] : pending_) {
-            pending->result = {tag, 0, interconnect::pcie::Status::Timeout, {}, 0, "platform reset", false};
+            pending->result = {tag, 0, interconnect::fabric::Status::Timeout, {}, 0, "platform reset", false};
             pending->done.notify(sc_core::SC_ZERO_TIME);
         }
         pending_.clear();
@@ -46,14 +49,14 @@ public:
     }
     const Interconnect& hardware() const { return *hardware_; }
 private:
-    struct Window { std::uint32_t base; std::uint64_t size; unsigned latency; bool ram; std::size_t rank_bytes; };
+    struct Window { std::uint32_t base; std::uint64_t size; unsigned latency; WindowKind kind; std::size_t rank_bytes; };
     struct Pending { sc_core::sc_event done; devices::common::BusResult result{}; };
     void attach(std::size_t index) {
         const auto window = windows_.at(index);
-        interconnect::pcie::Endpoint endpoint{window.base, window.size, window.latency,
+        interconnect::fabric::Endpoint endpoint{window.base, window.size, window.latency,
             [this, index](auto address, auto count) { return forward(index, address, devices::common::Bytes(count), false); },
             [this, index](auto address, const auto& data) { forward(index, address, data, true); }, "TLM endpoint"};
-        if (window.ram && (dram_ || interleaved_)) {
+        if (window.kind == WindowKind::Ram && (dram_ || interleaved_)) {
             endpoint.prepare = [this](auto tag, auto op, auto address, auto bytes) {
                 return interleaved_ ? interleaved_->prepare(tag, op, address, bytes)
                                     : dram_->prepare(tag, op, address, bytes);
@@ -67,7 +70,7 @@ private:
                 else dram_->cancel(tag, address);
             };
         }
-        if (window.ram) hardware_->map_memory_endpoint(std::move(endpoint), window.rank_bytes);
+        if (window.kind == WindowKind::Ram) hardware_->map_memory_endpoint(std::move(endpoint), window.rank_bytes);
         else hardware_->map_mmio_endpoint(std::move(endpoint));
     }
     devices::common::Bytes forward(std::size_t index, std::uint32_t address,
@@ -78,6 +81,17 @@ private:
         transaction.set_data_ptr(bytes.data());
         transaction.set_data_length(static_cast<unsigned>(bytes.size()));
         transaction.set_streaming_width(static_cast<unsigned>(bytes.size()));
+        std::optional<PcieRequest> packet;
+        struct ExtensionScope {
+            tlm::tlm_generic_payload& payload;
+            ~ExtensionScope() { payload.clear_extension<PcieRequest>(); }
+        } extension_scope{transaction};
+        if (windows_[index].kind == WindowKind::Pcie) {
+            using Root = soc::controller::PcieRootComplex;
+            if (write) packet.emplace(Root::memory_write(address, bytes));
+            else packet.emplace(Root::memory_read(address, bytes.size()));
+            transaction.set_extension(&*packet);
+        }
         auto delay = sc_core::SC_ZERO_TIME;
         downstream[static_cast<int>(index)]->b_transport(transaction, delay);
         if (delay != sc_core::SC_ZERO_TIME || transaction.is_response_error())
@@ -112,12 +126,12 @@ private:
             sc_core::wait(pending.done);
             context->result = std::move(pending.result);
             if (!write) std::copy(context->result.data.begin(), context->result.data.end(), transaction.get_data_ptr());
-            transaction.set_response_status(context->result.status == interconnect::pcie::Status::Success
+            transaction.set_response_status(context->result.status == interconnect::fabric::Status::Success
                 ? tlm::TLM_OK_RESPONSE : tlm::TLM_GENERIC_ERROR_RESPONSE);
         } catch (const sc_core::sc_unwind_exception&) {
             throw;
         } catch (const std::exception& error) {
-            context->result = {0, context->master, interconnect::pcie::Status::BackendError, {}, 0, error.what(), false};
+            context->result = {0, context->master, interconnect::fabric::Status::BackendError, {}, 0, error.what(), false};
             transaction.set_response_status(tlm::TLM_GENERIC_ERROR_RESPONSE);
         }
     }
@@ -134,7 +148,7 @@ private:
         advanced_.notify(sc_core::SC_ZERO_TIME);
     }
     soc::controller::IOMMU& iommu_;
-    interconnect::pcie::Config config_;
+    interconnect::fabric::Config config_;
     std::unique_ptr<Interconnect> hardware_;
     soc::controller::DramTiming* dram_;
     soc::controller::InterleavedDramMemory* interleaved_;

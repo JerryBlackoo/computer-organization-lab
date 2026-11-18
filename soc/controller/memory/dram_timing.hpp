@@ -1,7 +1,7 @@
 #pragma once
 
 #include "memory.hpp"
-#include "../../../interconnect/pcie/pcie.hpp"
+#include "../../../interconnect/fabric.hpp"
 
 namespace colab::soc::controller {
 
@@ -25,7 +25,7 @@ public:
     std::uint64_t cycles() const { return cycle_; }
     const Statistics& statistics() const { return stats_; }
 
-    bool prepare(interconnect::pcie::Tag tag, interconnect::pcie::Operation operation,
+    bool prepare(interconnect::fabric::Tag tag, interconnect::fabric::Operation operation,
                  std::uint32_t address, std::size_t bytes) {
         if (!bytes) throw std::invalid_argument("empty DRAM beat");
         if (request_) {
@@ -42,12 +42,12 @@ public:
         due_ = std::max(cycle_ + 1, available_);
         return false;
     }
-    void complete(interconnect::pcie::Tag tag, std::uint32_t address) {
+    void complete(interconnect::fabric::Tag tag, std::uint32_t address) {
         if (!request_ || request_->tag != tag || request_->address != address || phase_ != Phase::Ready)
             throw std::logic_error("DRAM data beat completed without readiness");
         request_.reset(); phase_ = Phase::Idle;
     }
-    void cancel(interconnect::pcie::Tag tag, std::uint32_t address) {
+    void cancel(interconnect::fabric::Tag tag, std::uint32_t address) {
         if (request_ && request_->tag == tag && request_->address == address) {
             available_ = std::max(available_, due_);
             request_.reset(); phase_ = Phase::Idle;
@@ -67,8 +67,8 @@ public:
             ++stats_.activations;
             phase_ = Phase::Column; due_ = cycle_ + config_.tRCD; break;
         case Phase::Column:
-            trace_.command = request_->op == interconnect::pcie::Operation::Read ? Command::Read : Command::Write;
-            if (request_->op == interconnect::pcie::Operation::Read) ++stats_.reads; else ++stats_.writes;
+            trace_.command = request_->op == interconnect::fabric::Operation::Read ? Command::Read : Command::Write;
+            if (request_->op == interconnect::fabric::Operation::Read) ++stats_.reads; else ++stats_.writes;
             phase_ = Phase::WaitData; due_ = cycle_ + config_.tCAS; break;
         case Phase::WaitData:
             trace_.command = Command::DataReady; ++stats_.ready; phase_ = Phase::Ready; break;
@@ -76,7 +76,7 @@ public:
         }
     }
 private:
-    struct Request { interconnect::pcie::Tag tag; interconnect::pcie::Operation op; std::uint32_t address; std::size_t bytes; };
+    struct Request { interconnect::fabric::Tag tag; interconnect::fabric::Operation op; std::uint32_t address; std::size_t bytes; };
     Memory& memory_;
     Config config_;
     std::optional<Request> request_;

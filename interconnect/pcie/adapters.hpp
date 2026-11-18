@@ -1,6 +1,6 @@
 #pragma once
 #include "pcie.hpp"
-namespace colab::interconnect::pcie {
+namespace colab::interconnect::fabric {
 // Existing controller::Memory and simulation::MemoryAccess both expose read/write.
 // Addresses remain ABSOLUTE. The backend and captured callbacks must outlive the fabric.
 template <class MemoryPort>

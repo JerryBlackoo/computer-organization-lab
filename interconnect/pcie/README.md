@@ -1,19 +1,13 @@
 # PCIe目录中的总线事务/定时教学模型
 
-`pcie.hpp` 原来只有空的 `colab::interconnect::PCIe`。本版以该名字提供
-`pcie::Fabric` 的别名，实现可运行事务调度；**不是PCIe物理层或完整协议栈**。
-依据父代理亲自阅读三张图片后的逐页转述实现，本实现者未直接看到原图。
+共享事务互连的实现位于 [`../fabric.hpp`](../fabric.hpp)。它负责 RAM 和 MMIO 的物理地址译码、
+仲裁和事务调度。这里保留原实验和 `pcie.hpp` 兼容入口，`pcie::Fabric` 与 `PCIe` 对应同一个 `fabric::Fabric`。
+完整整机连线见 [I/O 系统](../../docs/io-system.md)。
 
-## 先核对现有系统
+## 独立总线实验的连接方式
 
-- `soc/controller/pcie/PCIe`、IOMMU、Interrupt、NVMe及其控制器/DMA/NAND、NIC、GPU目前均为空类，
-  没有可复用的Root Complex、BAR或Endpoint注册接口，因此不伪造这些组件已经实现。
-- 已有 `soc::controller::Memory` 有窗口片选、字节read/write及DIMM真实后端；
-  `simulation::MemoryAccess`有MMU权限检查和物理回调。这两者通过`adapters.hpp`的`map_memory`
-  直接复用，测试确实访问现有DIMM，未另建影子内存作为主要后端。
-- HDD的DMA是HDD私有周期挪用流程，绑定其host_memory与ms时序；没有通用外接事务端口，
-  本次不改HDD来硬接。Master ID允许表示CPU/DMA发起者，不等于已接HDD DMA或IOMMU。
-- 不改soc顶层、RV32Core、pipeline或上述设备桩。`simulation::Simulator<Fabric>`直接调用tick。
+- `adapters.hpp` 的 `map_memory` 可复用 `soc::controller::Memory` 或 `simulation::MemoryAccess` 的读写接口。
+- 独立实验可按 master ID 提交 CPU 或 DMA 事务，并直接调用 `Fabric::tick()` 推进调度。
 
 ## 与图片逐项对应
 
