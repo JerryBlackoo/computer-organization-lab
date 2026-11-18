@@ -1,5 +1,5 @@
-#include "../../soc/core/wangdao09/execution.hpp"
-#include "../../soc/core/rv32_core.hpp"
+#include "../../soc/shared/wangdao09/execution.hpp"
+#include "../../soc/rv32/core.hpp"
 #include <iostream>
 
 using W = colab::soc::core::wangdao09::Execution;

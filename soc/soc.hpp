@@ -1,9 +1,9 @@
 #pragma once
 
 #include "address_map.hpp"
-#include "core/core.hpp"
-#include "core/rv32_core.hpp"
-#include "noc/noc.hpp"
+#include "cpu16/core.hpp"
+#include "rv32/core.hpp"
+#include "cpu16/bus.hpp"
 #include "controller/interrupt/interrupt.hpp"
 #include "controller/pcie/pcie.hpp"
 #include "cache/cpu_port.hpp"

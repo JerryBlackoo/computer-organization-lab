@@ -1,4 +1,4 @@
-#include "../soc/core/alu/alu.hpp"
+#include "../soc/cpu16/alu/alu.hpp"
 
 #include <cassert>
 #include <cstdint>

@@ -1,5 +1,5 @@
 #include "simulation/simulator.hpp"
-#include "soc/core/core.hpp"
+#include "soc/cpu16/core.hpp"
 
 #include <iomanip>
 #include <iostream>

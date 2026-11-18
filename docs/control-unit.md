@@ -2,7 +2,7 @@
 
 阶段 1 的原实现检查与真实执行流程见 [检查记录](control-unit-audit.md)。
 本页说明 `RV32Core::Execution::MultiCycle` 下的硬布线/微程序对照实验，并保留原 16 位 `Core`。
-整机默认采用 [RV32 流水线](../soc/core/pipeline/README.md)；多周期实验需显式配置
+整机默认采用 [RV32 流水线](../soc/rv32/pipeline/README.md)；多周期实验需显式配置
 `SoCConfig.cpu_execution = RV32Core::Execution::MultiCycle`。两种多周期控制器执行相同的 RV32 机器字。
 
 ## 旁路与控制信号：王道第 09 题实验
@@ -30,8 +30,8 @@ CU 根据当前微状态选择总线驱动源，发出 `y_in`、`alu_a_from_bus`
 这里 `sub` 四拍还要求第 1 拍通过**地址旁路**从总线发起访存，第 2 拍响应可经独立接口写入 MDR，
 同时内部总线传送 R3。若访存必须等待 MAR 在边沿更新后才能发起，或响应较慢，需要重新安排并增加等待拍。
 实验控制器只实现题目的 `inc Rd` 和 `sub Rd,Rs1,(Rs2)` 执行阶段，不是原 16 位 Core 的完整取指流程，
-也不接入 RV32 正常执行路径或改变其默认配置与五拍访存约定。实现见 [执行控制器](../soc/core/wangdao09/execution.hpp)
-和 [单总线数据通路](../soc/core/datapath/single_bus.hpp)。
+也不接入 RV32 正常执行路径或改变其默认配置与五拍访存约定。实现见 [执行控制器](../soc/shared/wangdao09/execution.hpp)
+和 [单总线数据通路](../soc/cpu16/datapath.hpp)。
 
 同一对照也运行现有 32 位 RV32 流水线：分别关闭、开启指令间转发，观察 ALU 输入的来源及等待。
 `lhu` 后立即使用加载结果时，即使开启转发仍有一次等待。RV32 使用多条指令完成对应计算，
@@ -156,10 +156,10 @@ BEQ 的 μ42 根据已锁存 Equal 选择 μ43（分支）或 μ44（顺序）�
 ./tests/run_control_units.sh
 ```
 
-入口头文件为 `soc/core/rv32_core.hpp`；`soc/soc.hpp` 也导出该核心。
+入口头文件为 `soc/rv32/core.hpp`；`soc/soc.hpp` 也导出该核心。
 
 ```cpp
-#include "soc/core/rv32_core.hpp"
+#include "soc/rv32/core.hpp"
 using CPU = colab::soc::RV32Core;
 CPU cpu({0x00A00093, 0x01400113, 0x002081B3}, CPU::Mode::Microprogrammed);
 cpu.run_instructions(3);
@@ -232,4 +232,4 @@ ECALL/EBREAK 经系统指令序列发起异常，处理程序可修正 mepc 后 
 `RV32Core::Execution::Pipelined` 采用独立的流水硬布线控制，共用 RV32 译码与基础部件，
 使用四组级间寄存器、转发/停顿/冲刷和真实数据总线握手；不套用本页的多周期微拍序列。
 流水与微程序同时启用会明确拒绝，未实现多拍微程序占用流水级的混合控制。
-精确中断、CSR 序列化、故障重试及观察接口见 [流水线说明](../soc/core/pipeline/README.md)。
+精确中断、CSR 序列化、故障重试及观察接口见 [流水线说明](../soc/rv32/pipeline/README.md)。

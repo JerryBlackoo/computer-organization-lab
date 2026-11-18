@@ -1,6 +1,6 @@
-#include "../soc/core/datapath/dedicated/alu.hpp"
-#include "../soc/core/datapath/dedicated/register_file.hpp"
-#include "../soc/core/datapath/dedicated/memory.hpp"
+#include "../soc/rv32/datapath/dedicated/alu.hpp"
+#include "../soc/rv32/datapath/dedicated/register_file.hpp"
+#include "../soc/rv32/datapath/dedicated/memory.hpp"
 #include <cassert>
 #include <random>
 

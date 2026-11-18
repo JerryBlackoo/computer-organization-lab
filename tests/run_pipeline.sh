@@ -8,5 +8,5 @@ for name in rv32_datapath_test rv32_muldiv_test pipeline_test rv32_subword_test 
     "$pipeline_build_dir/$name"
     printf 'PASS %s\n' "$name"
 done
-"${CXX:-g++}" -std=c++17 -Wall -Wextra -Wpedantic -Werror soc/core/pipeline/example.cpp -o "$pipeline_build_dir/demo"
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Wpedantic -Werror soc/rv32/pipeline/example.cpp -o "$pipeline_build_dir/demo"
 "$pipeline_build_dir/demo"

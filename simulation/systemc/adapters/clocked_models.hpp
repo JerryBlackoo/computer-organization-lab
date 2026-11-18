@@ -2,7 +2,7 @@
 
 #include "queued_tlm_port.hpp"
 #include "../../../soc/cache/cpu_port.hpp"
-#include "../../../soc/core/rv32_core.hpp"
+#include "../../../soc/rv32/core.hpp"
 #include "../../../soc/controller/interrupt/interrupt.hpp"
 #include "../../../devices/clint/clint.hpp"
 #include <functional>

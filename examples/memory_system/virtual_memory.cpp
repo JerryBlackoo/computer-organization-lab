@@ -1,6 +1,6 @@
 #include "../../soc/cache/cache.hpp"
 #include "../../soc/controller/memory/memory.hpp"
-#include "../../soc/core/mmu/page_table_port/page_table_port.hpp"
+#include "../../soc/shared/mmu/page_table_port/page_table_port.hpp"
 #include "../../simulation/memory_access.hpp"
 
 #include <iostream>

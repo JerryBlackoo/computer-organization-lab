@@ -2,7 +2,7 @@
 
 本实验把乘除作为独立功能单元接入 32 位 ALU。它依据提供的三张逻辑结构图，
 用加减、移位和位判断模拟寄存器内部的运算；实现见
-[`muldiv.hpp`](../soc/core/datapath/dedicated/muldiv.hpp)。下面用 4 位例子缩短推演，
+[`muldiv.hpp`](../soc/rv32/datapath/dedicated/muldiv.hpp)。下面用 4 位例子缩短推演，
 实际操作数为 32 位，正常计算逐拍循环 32 轮；除零与有符号商溢出在启动拍返回规定值。示例中的 P、Q、R 是单元内的临时状态，
 不能作为 RV32 的软件可见寄存器访问。
 

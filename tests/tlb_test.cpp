@@ -1,4 +1,4 @@
-#include "../soc/core/mmu/tlb/tlb.hpp"
+#include "../soc/shared/mmu/tlb/tlb.hpp"
 
 #include <cassert>
 #include <iostream>

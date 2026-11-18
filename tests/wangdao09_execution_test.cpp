@@ -1,4 +1,4 @@
-#include "../soc/core/wangdao09/execution.hpp"
+#include "../soc/shared/wangdao09/execution.hpp"
 #include <cassert>
 #include <stdexcept>
 using W = colab::soc::core::wangdao09::Execution;

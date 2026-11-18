@@ -1,6 +1,6 @@
 #include "io_test_support.hpp"
 #include "rv32_test_support.hpp"
-#include "../soc/core/mmu/page_table_port/page_table_port.hpp"
+#include "../soc/shared/mmu/page_table_port/page_table_port.hpp"
 #include <random>
 
 using namespace io_test;

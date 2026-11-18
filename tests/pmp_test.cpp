@@ -1,4 +1,4 @@
-#include "../soc/core/pmp/pmp.hpp"
+#include "../soc/rv32/pmp/pmp.hpp"
 #include <iostream>
 #include <random>
 

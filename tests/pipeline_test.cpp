@@ -1,6 +1,6 @@
 #include "rv32_reference.hpp"
 #include "../soc/soc.hpp"
-#include "../soc/core/mmu/page_table_port/page_table_port.hpp"
+#include "../soc/shared/mmu/page_table_port/page_table_port.hpp"
 
 #include <iostream>
 #include <map>

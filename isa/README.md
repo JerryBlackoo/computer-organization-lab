@@ -27,8 +27,8 @@ ISA（Instruction Set Architecture，指令集体系结构）是软件与硬件�
 流水级数、转发、停顿、控制器微指令和 Cache 参数属于实现选择，不改变上述指令语义。
 RV32M 除零商为全 1、余数为被除数；有符号商向零截断，最小负数除以 −1 得原值、余数为 0。
 逐位算法和执行拍的限制见 [RV32M 运算说明](../docs/rv32-muldiv.md)。
-具体实现见 [RV32Core](../soc/core/rv32_core.hpp)、[RV32 译码](../soc/core/decoder/decoder.hpp)、
-[流水线](../soc/core/pipeline/README.md)与[多周期控制](../docs/control-unit.md)。
+具体实现见 [RV32Core](../soc/rv32/core.hpp)、[RV32 译码](../soc/shared/decoder/decoder.hpp)、
+[流水线](../soc/rv32/pipeline/README.md)与[多周期控制](../docs/control-unit.md)。
 
 ## 原 16 位教学核心
 
@@ -128,10 +128,10 @@ MMU 的宿主配置接口和 C++ 异常不等于已经定义了相应的 ISA 指
 
 ## 与实现的对应关系
 
-- [Core 指令表示与编码](../soc/core/decoder/instruction.hpp)：操作码、指令字段和编码函数。
-- [Decoder](../soc/core/decoder/decoder.hpp)：从 16 位指令字解析指令。
-- [Core](../soc/core/core.hpp)：按控制信号执行指令。
-- [指令周期与时钟脉冲](../soc/core/README.md)：现有单总线实现的阶段、节拍和提交规则。
+- [Core 指令表示与编码](../soc/shared/decoder/instruction.hpp)：操作码、指令字段和编码函数。
+- [Decoder](../soc/shared/decoder/decoder.hpp)：从 16 位指令字解析指令。
+- [Core](../soc/cpu16/core.hpp)：按控制信号执行指令。
+- [指令周期与时钟脉冲](../soc/cpu16/README.md)：现有单总线实现的阶段、节拍和提交规则。
 
 上面的规范框架参考用户提供的 ISA 材料；其中引述的王道教材位置为
 `learn-computer-organization/books/knowledge/mineru_raw/wangdao/FULL.md` 的 647–676、

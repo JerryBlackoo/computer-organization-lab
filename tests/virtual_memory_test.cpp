@@ -1,5 +1,5 @@
-#include "../soc/core/mmu/mmu.hpp"
-#include "../soc/core/mmu/page_table_port/page_table_port.hpp"
+#include "../soc/shared/mmu/mmu.hpp"
+#include "../soc/shared/mmu/page_table_port/page_table_port.hpp"
 
 #include <cassert>
 #include <iostream>

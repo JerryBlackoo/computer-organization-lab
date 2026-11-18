@@ -1,5 +1,5 @@
 > 历史实现检查快照。下文提到的 MIPS 专用单周期与独立流水代码已在 RV32 流水整合时移除；
-> 当前实现见 [RV32 流水线](../soc/core/pipeline/README.md)，这些历史文件名不再是可用入口。
+> 当前实现见 [RV32 流水线](../soc/rv32/pipeline/README.md)，这些历史文件名不再是可用入口。
 
 # 阶段 1：控制器与数据通路检查
 
@@ -34,8 +34,8 @@ FR 由数据通路锁存，但原 ADD/SUB/HALT 序列尚无消费标志的条件
 
 | 文件 | 检查结论 |
 |---|---|
-| `soc/core/decoder/decoder.hpp` | 原接口只译码 16 位自定义教学指令，不能把它称作 RV32I |
-| `soc/core/control_unit/control_unit.hpp` | 组织时序、组合控制线、下拍逻辑，未提供模式选择 |
+| `soc/shared/decoder/decoder.hpp` | 原接口只译码 16 位自定义教学指令，不能把它称作 RV32I |
+| `soc/shared/control_unit/control_unit.hpp` | 组织时序、组合控制线、下拍逻辑，未提供模式选择 |
 | `control_logic/control_logic.hpp` | 七拍取指、操作数、执行、写回的硬布线有限状态机 |
 | `control_signal_generator/control_signal_generator.hpp` | PCout/MARin/Read/MDRout/IRin/Yin/Zin/GPRin 等实际控制线 |
 | `timing_generator/timing_generator.hpp` | 每次脉冲推进一拍，记录指令/阶段节拍；异常时不推进 |

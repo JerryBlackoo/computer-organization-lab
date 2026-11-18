@@ -1,5 +1,5 @@
-#include "../soc/core/rv32_core.hpp"
-#include "../soc/core/control_unit/control_signal_generator/control_signal_generator.hpp"
+#include "../soc/rv32/core.hpp"
+#include "../soc/shared/control_unit/control_signal_generator/control_signal_generator.hpp"
 
 #include <array>
 #include <cstdint>

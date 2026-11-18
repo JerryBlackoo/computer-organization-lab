@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../soc/core/rv32_core.hpp"
+#include "../soc/rv32/core.hpp"
 #include <cassert>
 
 namespace rv32_test {

@@ -6,7 +6,7 @@ TLB 组织是本模拟器的实现选择，RISC-V ISA 不要求 TLB 必须采用
 
 ## 配置与兼容
 
-`soc/core/mmu/tlb/geometry.hpp` 定义 `mmu::TlbConfig{entries, ways}`：
+`soc/shared/mmu/tlb/geometry.hpp` 定义 `mmu::TlbConfig{entries, ways}`：
 
 **总项数 entries = 组数 sets × 路数 ways**，`sets = entries / ways`。
 entries/ways 必须为正、整除且 ways 不大于 entries；组数必须为 2 的幂且不超过 20 位 VPN 空间的 2^20。

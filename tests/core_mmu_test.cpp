@@ -1,4 +1,4 @@
-#include "../soc/core/core.hpp"
+#include "../soc/cpu16/core.hpp"
 
 #include <cassert>
 

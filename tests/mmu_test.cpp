@@ -1,4 +1,4 @@
-#include "../soc/core/mmu/mmu.hpp"
+#include "../soc/shared/mmu/mmu.hpp"
 
 #include <cassert>
 #include <limits>
