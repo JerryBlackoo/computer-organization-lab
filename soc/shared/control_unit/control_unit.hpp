@@ -4,6 +4,8 @@
 #include "control_signal_generator/control_signal_generator.hpp"
 #include "../../rv32/control_unit/hardwired/hardwired_controller.hpp"
 #include "../../rv32/control_unit/microprogrammed/microprogrammed_controller.hpp"
+#include "../../rv32/control_unit/vertical/vertical_controller.hpp"
+#include <optional>
 
 #include <utility>
 
@@ -15,6 +17,7 @@ public:
                          control_unit::microprogrammed::ControlStore store = {})
         : mode_(mode), microprogrammed_(std::move(store)) {
         validate_mode(mode);
+        if (mode == Mode::VerticalMicroprogrammed) vertical_.emplace(microprogrammed_.control_store());
     }
 
     // RV32 接口。任意一次调用只访问当前模式的一个控制器。
@@ -23,11 +26,14 @@ public:
         validate_mode(mode);
         if (!active().at_instruction_boundary())
             throw std::logic_error("control mode can change only at an instruction boundary");
+        if (mode == Mode::VerticalMicroprogrammed && !vertical_)
+            vertical_.emplace(microprogrammed_.control_store());
         mode_ = mode;
     }
     void reset() {
         timing_ = {};
         hardwired_.reset(); microprogrammed_.reset();
+        if (vertical_) vertical_->reset();
         rv32_pulses_ = 0; rv32_retired_ = 0;
     }
     control_unit::rv32::ControlSignals signals(const DecodedInstruction& instruction,
@@ -56,6 +62,15 @@ public:
     std::uint64_t rv32_completed_instructions() const { return rv32_retired_; }
     const control_unit::HardwiredController& hardwired() const { return hardwired_; }
     const control_unit::MicroprogrammedController& microprogrammed() const { return microprogrammed_; }
+    const control_unit::vertical::Controller& vertical() const {
+        if (!vertical_) throw std::logic_error("vertical controller has not been selected");
+        return *vertical_;
+    }
+    std::optional<control_unit::microprogrammed::MicroAddress> micro_address() const {
+        if (mode_ == Mode::Microprogrammed) return microprogrammed_.micro_pc();
+        if (mode_ == Mode::VerticalMicroprogrammed) return vertical().micro_pc();
+        return std::nullopt;
+    }
 
     // 原有 16 位教学 Core 的接口保持不变。
     control_unit::Phase phase() const { return timing_.phase(); }
@@ -73,20 +88,23 @@ public:
     }
 private:
     static void validate_mode(Mode mode) {
-        if (mode != Mode::Hardwired && mode != Mode::Microprogrammed)
+        if (mode != Mode::Hardwired && mode != Mode::Microprogrammed && mode != Mode::VerticalMicroprogrammed)
             throw std::invalid_argument("unknown control mode");
     }
     control_unit::rv32::ControlInterface& active() {
         if (mode_ == Mode::Hardwired) return hardwired_;
+        if (mode_ == Mode::VerticalMicroprogrammed) return *vertical_;
         return microprogrammed_;
     }
     const control_unit::rv32::ControlInterface& active() const {
         if (mode_ == Mode::Hardwired) return hardwired_;
+        if (mode_ == Mode::VerticalMicroprogrammed) return *vertical_;
         return microprogrammed_;
     }
     Mode mode_;
     control_unit::HardwiredController hardwired_;
     control_unit::MicroprogrammedController microprogrammed_;
+    std::optional<control_unit::vertical::Controller> vertical_;
     std::uint64_t rv32_pulses_ = 0, rv32_retired_ = 0;
     control_unit::TimingGenerator timing_;
     control_unit::ControlLogic logic_;

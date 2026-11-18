@@ -1,10 +1,12 @@
 #pragma once
 
-#include "microinstruction.hpp"
+#include "encoding.hpp"
 #include "../../datapath/dedicated/rv32_alu_control.hpp"
 
 #include <array>
 #include <optional>
+#include <bitset>
+#include <vector>
 
 namespace colab::soc::core::control_unit::microprogrammed {
 
@@ -14,7 +16,7 @@ public:
     static constexpr std::size_t capacity = 256;
     static constexpr MicroAddress fetch_entry = 0;
 
-    ControlStore() {
+    ControlStore() : draft_(capacity) {
         using P = rv32::Phase;
         using datapath::dedicated::ALUCtr;
         auto& address = put(0, P::FetchAddress); address.control.mar_from_pc = true;
@@ -96,15 +98,41 @@ public:
         for (std::size_t i = 0; i < multiply_divide.size(); ++i)
             muldiv(static_cast<MicroAddress>(200 + i * 4),
                    datapath::dedicated::rv32_alu_control(multiply_divide[i]));
+        for (std::size_t i = 0; i < capacity; ++i) {
+            if (draft_[i]) {
+                words_[i] = encode(*draft_[i]); phases_[i] = draft_[i]->phase; valid_.set(i);
+            }
+        }
+        std::vector<std::optional<Microinstruction>>{}.swap(draft_);
     }
 
-    const Microinstruction& at(MicroAddress address) const {
-        const auto& word = words_.at(address);
-        if (!word) throw std::logic_error("uninitialized control-store address");
-        return *word;
+    MicroWord raw_at(MicroAddress address) const {
+        const auto word = words_.at(address);
+        if (!valid_.test(address)) throw std::logic_error("uninitialized control-store address");
+        return word;
     }
-    // 仅供构造实验 ROM 映像；控制器持有自己的副本，不允许运行时修改。
-    void set(MicroAddress address, Microinstruction instruction) { words_.at(address) = instruction; }
+    rv32::Phase phase_at(MicroAddress address) const {
+        (void)raw_at(address);
+        return phases_.at(address);
+    }
+    Microinstruction at(MicroAddress address) const {
+        if (!draft_.empty()) {
+            const auto& word = draft_.at(address);
+            if (!word) throw std::logic_error("uninitialized control-store address");
+            return *word;
+        }
+        return decode(raw_at(address), phases_.at(address));
+    }
+    // Assembly API; execution and storage use fixed 64-bit words, not C++ structures.
+    void set(MicroAddress address, Microinstruction instruction) {
+        if (!draft_.empty()) { draft_.at(address) = instruction; return; }
+        set_raw(address, encode(instruction), instruction.phase);
+    }
+    void set_raw(MicroAddress address, MicroWord word, rv32::Phase phase) {
+        (void)decode(word, phase); // reject invalid fields before modifying the store
+        words_.at(address) = word; phases_.at(address) = phase; valid_.set(address);
+    }
+    bool valid(MicroAddress address) const { return address < capacity && valid_.test(address); }
 
     MicroAddress entry(Operation operation) const {
         switch (operation) {
@@ -158,9 +186,9 @@ private:
         Operation::Mul, Operation::Mulh, Operation::Mulhsu, Operation::Mulhu,
         Operation::Div, Operation::Divu, Operation::Rem, Operation::Remu};
     Microinstruction& put(MicroAddress address, rv32::Phase phase) {
-        words_.at(address) = Microinstruction{};
-        words_[address]->phase = phase;
-        return *words_[address];
+        draft_.at(address) = Microinstruction{};
+        draft_[address]->phase = phase;
+        return *draft_[address];
     }
     Microinstruction& finish(MicroAddress address, rv32::Phase phase) {
         auto& word = put(address, phase);
@@ -205,6 +233,9 @@ private:
         finish(address + 3, rv32::Phase::Branch).control.pc_source = rv32::PCSource::Branch;
         finish(address + 4, rv32::Phase::Branch);
     }
-    std::array<std::optional<Microinstruction>, capacity> words_{};
+    std::array<MicroWord, capacity> words_{};
+    std::array<rv32::Phase, capacity> phases_{}; // debug metadata, not part of CM word
+    std::bitset<capacity> valid_{};
+    std::vector<std::optional<Microinstruction>> draft_; // temporary assembler, freed after construction
 };
 } // namespace colab::soc::core::control_unit::microprogrammed

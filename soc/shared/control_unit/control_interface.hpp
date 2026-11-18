@@ -6,7 +6,7 @@
 
 namespace colab::soc::core::control_unit {
 
-enum class ControlMode { Hardwired, Microprogrammed };
+enum class ControlMode { Hardwired, Microprogrammed, VerticalMicroprogrammed };
 
 namespace rv32 {
 // signals 是本拍组合输出，clock 只在数据通路成功提交的边沿推进控制器。

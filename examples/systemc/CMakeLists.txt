@@ -222,7 +222,7 @@ if(BUILD_TESTING)
     endif()
     if(COLAB_RTL_TESTS)
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
-        foreach(rtl_test IN ITEMS muldiv cache sv32 virtual synth)
+        foreach(rtl_test IN ITEMS muldiv cache sv32 virtual synth microcoded)
             add_test(NAME rtl_${rtl_test}
                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/run_rtl_${rtl_test}.sh")
         endforeach()

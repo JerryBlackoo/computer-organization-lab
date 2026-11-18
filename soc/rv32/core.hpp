@@ -209,9 +209,7 @@ private:
             }
         }
         RV32CycleTrace trace{mode(), control_.rv32_phase(), control_.rv32_timing(), signals,
-            mode() == Mode::Microprogrammed
-                ? std::optional<core::control_unit::microprogrammed::MicroAddress>(control_.microprogrammed().micro_pc())
-                : std::nullopt,
+            control_.micro_address(),
             step.alu, signals.retire};
         if (signals.muldiv_start || signals.muldiv_step) trace.muldiv = step.next.muldiv;
         const RV32RetirementTrace retired{completed_instructions() + 1, clock_pulses() + 1,
@@ -336,7 +334,7 @@ private:
     void enter_exception(const core::RV32Fault& fault) {
         RV32CycleTrace trace{};
         trace.mode = mode(); trace.phase = control_.rv32_phase(); trace.timing = control_.rv32_timing();
-        if (mode() == Mode::Microprogrammed) trace.micro_address = control_.microprogrammed().micro_pc();
+        trace.micro_address = control_.micro_address();
         const auto target = interrupts_.exception(fault.pc(), static_cast<std::uint32_t>(fault.cause()), fault.value());
         trace.trap = core::RV32Trap{fault.cause(), fault.pc(), fault.value(), target};
         control_.abort_instruction();
@@ -349,9 +347,7 @@ private:
     }
     void record_hold(const core::control_unit::rv32::ControlSignals& signals, bool interrupt = false) {
         last_cycle_ = RV32CycleTrace{mode(), control_.rv32_phase(), control_.rv32_timing(), signals,
-            mode() == Mode::Microprogrammed
-                ? std::optional<core::control_unit::microprogrammed::MicroAddress>(control_.microprogrammed().micro_pc())
-                : std::nullopt,
+            control_.micro_address(),
             std::nullopt, false, !interrupt, interrupt};
     }
     [[noreturn]] void throw_access(bool store) const {

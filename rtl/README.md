@@ -1,5 +1,7 @@
 # RTL 实验：多周期 RV32IM
 
+另有 [水平 64 位及垂直 48 位微代码的微程序 RTL 教学核](../docs/binary-microcode.md)：目前只支持 ADD、ADDI、SUB、LW、SW、BEQ 和零等待端口，独立于下述硬布线核心。
+
 `rv32im/core.sv` 是独立的多周期 RTL 核，使用单个在途的 AXI4-Lite 读写事务。
 读通道遵循 AR/R 握手；写通道分别保持 AW 和 W，待两者均被接收后等待 B。
 `alu32.sv` 是 32 位加减单元，`muldiv.sv` 在 32 个迭代边沿复用该 ALU；
@@ -48,5 +50,5 @@ Yosys 检查各核心、Cache 接线及独立 Sv32 的可综合进程转换，�
 
 若工具位于非标准位置，可通过 `IVERILOG`、`VVP`、`IVERILOG_IVL_DIR`、`YOSYS`、`CLANG`、
 `LD_LLD` 指定路径。测试使用临时目录，不安装依赖。
-若已有 SystemC 构建目录，也可配置 `-DCOLAB_RTL_TESTS=ON`，再运行 `ctest`；这样会将六项
+若已有 SystemC 构建目录，也可配置 `-DCOLAB_RTL_TESTS=ON`，再运行 `ctest`；这样会将
 RTL 仿真与综合测试加入常规回归，要求上述依赖均可用。
