@@ -1,34 +1,38 @@
 # CPU Datapath Teaching Simulator
 
-The **SystemC + TLM 2.0 virtual computer hardware platform** provides independent CPU, instruction and data caches, a shared bus, DIMM, NVMe/HDD/NIC, teaching timer and UART, DMA, and IRQs. It supports power-on, reset, pause, single-stepping, status inspection, and VCD output.
+A cycle-stepped teaching simulator for computer organization. The repository includes a 16-bit single-bus CPU, RV32 execution models, a SystemC virtual computer, and standalone SystemVerilog cores.
 
-The full system defaults to **4 ranks × 64 KiB = 256 KiB** of RAM (`[0,0x40000)`). Each rank has four x8 chips, each chip has two banks, and each bank has 64 rows × 128 columns. The standalone teaching DIMM uses a different default geometry for larger arrays; see the [DIMM configuration](dimm/README.md).
+| Experiment | What it runs | Start here |
+|---|---|---|
+| 16-bit single-bus CPU | A fixed-latency instruction ROM, register transfers, and ADD/SUB/HALT | [Build the demo](#16-bit-single-bus-demo) |
+| RV32 control units | One multicycle datapath with hardwired, horizontal microprogrammed, or vertical microprogrammed control | `bash tests/run_control_units.sh` |
+| RV32 pipeline and I/O | Five pipeline stages, instruction ROM, data cache, interrupts, and shared memory with HDD/NVMe/NIC | `bash tests/run_pipeline.sh` and `bash tests/run_io.sh` |
+| SystemC virtual computer | Multicycle RV32 with instruction/data caches backed by shared RAM, MMIO devices, DMA, IRQs, and VCD traces | [SystemC quick start](#systemc-quick-start) |
+| Standalone SystemVerilog | RV32IM core and a smaller teaching core that reads horizontal or vertical microcode ROM images | [RTL guide](rtl/README.md) |
 
-Run `bash examples/systemc/run.sh --interactive --trace /tmp/computer`, then enter `on` to start. This platform uses a multicycle RV32 core and fetches instructions from the DIMM. See the [SystemC platform documentation](docs/SYSTEMC_PLATFORM.md) for the wiring, usage, and current ISA limits.
+## SystemC quick start
 
-The [Clang-generated C program tests](examples/compiler_smoke/README.md) cover ELF loading, nested calls, the stack, integer operations, byte and halfword accesses, machine-mode ECALL → exception handling → MRET, and UART. These programs exercise platform integration; the microkernel remains future work.
+Run from the repository root with CMake and a C++17 compiler. The wrapper fetches and builds the pinned SystemC dependency.
 
-A user-mode C/PMP experiment enters U-mode via MRET and returns through a user ECALL. It also checks that user code cannot read machine-mode CSRs, access UART, overwrite kernel data, or execute kernel code. Addresses and test commands are in the same document.
+```bash
+bash examples/systemc/run.sh --interactive --trace /tmp/computer
+```
 
-The CPU model covers all 40 base RV32I instructions, the eight RV32M integer multiply/divide instructions, the six Zicsr instructions, and FENCE.I. The [timing contract](docs/TIMING_CONTRACT.md), [RV32M guide](docs/rv32-muldiv.md), optional [single-issue DRAM timing](docs/DRAM_TIMING.md), and [interleaved DRAM model](docs/INTERLEAVED_DRAM.md) describe the clocked behavior and its limits. A separate [RV32IM RTL experiment](rtl/README.md) is checked against the C++ core; its privileged and pipeline features are not yet complete. Shared-RAM tests verify execution of newly modified cached instructions and device DMA initiated after FENCE.
+Enter `on` at the simulator prompt. The default RAM is [256 KiB of DIMM memory](dimm/README.md) across four ranks. The [platform guide](docs/SYSTEMC_PLATFORM.md) covers reset, pause, single-stepping, status inspection, and tracing.
 
-The platform also includes a single-core CLINT compatible with mtime, mtimecmp, and MSIP, plus WFI. DMA and time continue to advance while the CPU waits; timer and software interrupts can wake it and return via ISR/MRET. The compiled C program tests exercise this path as well.
+The C++ RV32 model implements RV32I, RV32M, Zicsr, FENCE.I, and M/S/U privilege levels. The SystemC platform supports trap delegation, CLINT timers, and Sv32 paging. Its [bare-metal C tests](examples/compiler_smoke/README.md) boot ELF images and exercise ECALL and trap return, PMP, timer interrupts, and paging. A microkernel remains future work.
 
-S-mode, exception and interrupt delegation, and SRET are supported. The supervisor-mode C experiment checks timer interrupt delegation and nested U → S → M calls and returns. The shared-RAM multicycle core supports Sv32/Svade; see the [paging and boot contract](docs/SV32_HARDWARE_CONTRACT.md).
+## Implementation guides
 
-The earlier `SoC` / `ClockedSoC` comparison experiments default to an **RV32 five-stage pipeline** connected to the existing MMU, cache, shared bus, DIMM, and machine interrupts. IF/ID, ID/EX, EX/MEM, and MEM/WB registers separate instruction state; the pipeline supports forwarding, load-use stalls, branch flushes, memory-access waits, and in-order retirement. Run `bash tests/run_pipeline.sh` to see cycle-by-cycle occupancy and retirement. See [RV32 pipeline](soc/rv32/pipeline/README.md) for interfaces and scope. The MIPS-specific execution code has been removed; the shared 32-bit ALU, register file, and memory components remain for RV32.
+| Area | Documentation |
+|---|---|
+| CPU layout and datapaths | [Source layout](soc/README.md), [datapath comparison](soc/CPU_DATAPATH.md), [pipeline timing](soc/rv32/pipeline/README.md) |
+| Control and microcode | [Controller experiment](docs/control-unit.md), [horizontal binary encoding and RTL](docs/binary-microcode.md), [vertical microcode](docs/vertical-microcode.md) |
+| Memory and paging | [Data cache](docs/cpu-cache.md), [Sv32 boot contract](docs/SV32_HARDWARE_CONTRACT.md), [DRAM timing](docs/DRAM_TIMING.md), [interleaved DRAM](docs/INTERLEAVED_DRAM.md) |
+| I/O and bus sharing | [PIO, DMA, interrupts, and NVMe queues](docs/io-system.md), [PCIe BAR model](interconnect/pcie/README.md) |
+| Cycle counts and arithmetic | [Timing contract](docs/TIMING_CONTRACT.md), [RV32 multiply and divide](docs/rv32-muldiv.md) |
 
-The earlier `SoC` / `ClockedSoC` experiments also enable a **CPU data cache** by default: `RV32 CPU → MMU → Cache → shared bus → Memory → DIMM`. Read hits return directly; misses wait cycle by cycle for a full cache-line fill. Writes use write-through and no-write-allocate; MMIO bypasses the cache. Main-memory write notifications update existing cached lines and handle DMA writes interleaved with line fills. Run `bash tests/run_cpu_cache.sh` to inspect hits, misses, bus transactions, and memory accesses for the pipeline and both multicycle control modes. See [CPU data cache](docs/cpu-cache.md) for wiring, configuration, and limitations. This comparison path fetches instructions from a separate ROM; the SystemC platform uses the multicycle core and fetches from shared RAM.
-
-The **six-stage I/O integration** lets an RV32 guest drive HDD polling, interrupts, and DMA through MMIO; NVMe submits commands through memory-resident SQ/CQ queues and doorbells. The CPU, HDD, NVMe, and loopback NIC share a transaction bus and one DIMM. Run `bash tests/run_io.sh` to verify that four transfer/notification combinations read the same 512 bytes, along with permission, error, and concurrency checks. See the [I/O system documentation](docs/io-system.md) for registers, comparisons with the ten source images, the guest driver, and teaching-model limitations.
-
-The **RV32 hardwired and microprogrammed controller comparison** shares a decoder, cycle-stepped datapath, 32-bit ALU, register file, and data memory between both modes. It supports integer arithmetic, branches and jumps, and byte, halfword, and word memory accesses. Run `./tests/run_control_units.sh` for four test groups and the two-mode `x3=30` example (30 / 33 cycles). See the [controller experiment](docs/control-unit.md) for implementation, control store, and timing, and the [stage 1 audit](docs/control-unit-audit.md) for call relationships before the changes.
-
-The root `main.cpp` retains the 16-bit ALU, flag register, and single internal bus demonstration from question 43. Each `Simulator::step()` invokes `Core::tick()` once to advance one simulated clock cycle. See the [Core instruction cycle](soc/cpu16/README.md) for the relationship between instruction stages and cycles.
-
-For the two CPU implementations, their entry points and actual system connections, see the [CPU directory guide](soc/README.md). For datapath details and commands, see the [datapath documentation](soc/CPU_DATAPATH.md).
-
-## Build and run
+## 16-bit single-bus demo
 
 Run from this directory with a C++17 compiler:
 
@@ -69,7 +73,7 @@ The interface directly uses the 16-bit single bus in `soc/cpu16/bus.hpp`. `NoC` 
 
 | Component | Responsibility | File |
 |---|---|---|
-| ALU | 16-bit addition and subtraction; combinational result and SF/OF generation | `soc/cpu16/alu/alu.hpp` |
+| ALU | 16-bit addition and subtraction; combinational result and SF/OF/CF/ZF generation | `soc/cpu16/alu/alu.hpp` |
 | Bus | Select PC, MDR, GPR, or Z as the internal bus output source | `soc/cpu16/bus_interface.hpp` |
 | MMU | TLB, physical page-table reads/writes, R/W/X and privilege checks, A/D bits, fault registers, and cross-page translation; paging is disabled by default in Core | `soc/shared/mmu/mmu.hpp` |
 | Cache | K-way set associativity and LRU/FIFO/random/LFU replacement; the RV32 system uses a write-through data cache, while standalone experiments retain write-back and write buffering | `soc/cache/cache.hpp`, `soc/cache/cpu_port.hpp` |
@@ -112,7 +116,7 @@ An ADD/SUB instruction therefore takes ten cycles, corresponding to C1–C10 in 
 
 A `BusSource` selector represents the internal bus, allowing at most one output source per cycle. This corresponds to the problem's output-enable/multiplexer mechanism. The GPR read index selects between rs1 and rs2; the write index uses rd. Y holds the first operand across cycles, and Z holds the ALU result until it can be written back over the bus.
 
-## SF and OF implementation
+## Arithmetic flags
 
 Interpreted as 16-bit two's-complement numbers, the bit patterns represent values from -32768 to 32767. The calculation first uses a wider unsigned value and then truncates to the low 16 bits to obtain F.
 
@@ -122,7 +126,7 @@ OF_ADD = !(A15 xor B15) && (A15 xor F15)
 OF_SUB =  (A15 xor B15) && (A15 xor F15)
 ```
 
-Subtraction uses the sign bit of the original B. SF reflects only the most significant bit of the truncated result; OF indicates that the mathematical signed result is out of range. Both flags update during the arithmetic cycle; fetch, decode, write-back, and HALT preserve FR. The model implements the SF and OF flags specified by the problem, but no other flags.
+Subtraction uses the sign bit of the original B. SF reflects only the most significant bit of the truncated result; OF indicates that the mathematical signed result is out of range. CF records unsigned carry for addition and unsigned borrow for subtraction. ZF indicates a zero result. The arithmetic cycle updates all four flags. Fetch, decode, write-back, and HALT preserve FR.
 
 ## Custom instructions and main-memory model
 
